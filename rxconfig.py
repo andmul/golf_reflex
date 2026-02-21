@@ -7,10 +7,9 @@ config = rx.Config(
     # deploy_url=os.environ.get("RENDER_EXTERNAL_URL", ""),
     disable_plugins=["reflex.plugins.sitemap.SitemapPlugin"],
     cors_allowed_origins=[
-        "http://localhost:3000",
-        "http://localhost:8000",
+        "*",
     ],
     backend_port=8000,
     frontend_port=3000,
-    env=rx.Env.DEV,
+    env=rx.Env.PROD,
 )
