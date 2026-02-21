@@ -505,10 +505,8 @@ def scoring_stats_card():
             rx.heading("Scoring Statistiken", size="3"),
             rx.text(GolfState.stats_title, font_size="0.8em", color="gray"),
             rx.hstack(
-                # Use darker shades for text (#B8860B) to ensure accessibility (contrast > 3:1)
-                stat_box("Birdies", GolfState.scoring_stats["birdie"], "#B8860B", "rgba(255, 215, 0, 0.1)"),
-                # Use darker orange (#D35400) for better readability
-                stat_box("Eagles", GolfState.scoring_stats["eagle"], "#D35400", "rgba(255, 140, 0, 0.1)"),
+                stat_box("Birdies", GolfState.scoring_stats["birdie"], "#FFD700", "rgba(255, 215, 0, 0.1)"),
+                stat_box("Eagles", GolfState.scoring_stats["eagle"], "#FF8C00", "rgba(255, 140, 0, 0.1)"),
                 stat_box("Albatros", GolfState.scoring_stats["albatross"], "#8B00FF", "rgba(139, 0, 255, 0.1)"),
                 stat_box("Ace", GolfState.scoring_stats["ace"], "#FF0000", "rgba(255, 0, 0, 0.1)"),
                 width="100%", spacing="2", justify="between"
@@ -644,7 +642,8 @@ def dashboard():
                         data=GolfState.figure,
                         use_resize_handler=True,
                         style={"width": "100%", "height": "100%"},
-                        config={"displayModeBar": False, "scrollZoom": True}
+                        # Disable scrollZoom to prevent mobile scroll hijacking and "reverting" behavior
+                        config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"}
                     )
                 ),
                 width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
