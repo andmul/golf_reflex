@@ -642,7 +642,8 @@ def dashboard():
                         data=GolfState.figure,
                         use_resize_handler=True,
                         style={"width": "100%", "height": "100%"},
-                        config={"displayModeBar": False, "scrollZoom": True}
+                        # Disable scrollZoom to prevent mobile scroll hijacking and "reverting" behavior
+                        config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"}
                     )
                 ),
                 width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
