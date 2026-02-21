@@ -116,8 +116,7 @@ class GolfState(rx.State):
 
     # Filter states
     filter_brutto: bool = False
-    filter_einzel: bool = False
-    filter_vgw: bool = False
+    filter_turnierart: str = "Alle"
     selected_player: str = "Alle Spieler"
     selected_year: str = "2025"
 
@@ -153,11 +152,8 @@ class GolfState(rx.State):
     def toggle_brutto(self, value: bool):
         self.filter_brutto = value
 
-    def toggle_einzel(self, value: bool):
-        self.filter_einzel = value
-
-    def toggle_vgw(self, value: bool):
-        self.filter_vgw = value
+    def set_filter_turnierart(self, value: str):
+        self.filter_turnierart = value
 
     def set_selected_player(self, value: str):
         self.selected_player = value
@@ -200,13 +196,11 @@ class GolfState(rx.State):
             # Check for non-zero and non-NaN
             df = df[(df['Brutto'].notna()) & (df['Brutto'] != 0)]
 
-        # 2. Nur Einzel
-        if self.filter_einzel:
+        # 2. Turnierart Filter
+        if self.filter_turnierart == "Einzel":
             df = df[df['Spielmodus'].str.startswith('Einzel', na=False)]
-
-        # 3. Nur VGW (Implies Einzel usually, but we filter strictly by flag)
-        if self.filter_vgw:
-            df = df[df['HCPRelevant'] == True]
+        elif self.filter_turnierart == "Vorgabewirksam":
+             df = df[df['HCPRelevant'] == True]
 
         return df.sort_values('Datum').reset_index(drop=True)
 
@@ -625,12 +619,18 @@ def dashboard():
 
             # --- UPDATED TOGGLES ---
             rx.hstack(
+                rx.hstack(
+                    rx.text("Turnierart:", font_size="0.9em", font_weight="bold"),
+                    rx.select(
+                        ["Alle", "Einzel", "Vorgabewirksam"],
+                        value=GolfState.filter_turnierart,
+                        on_change=GolfState.set_filter_turnierart,
+                        width="180px"
+                    ),
+                    align="center", spacing="2"
+                ),
                 rx.hstack(rx.checkbox(checked=GolfState.filter_brutto, on_change=GolfState.toggle_brutto),
                           rx.text("nur Turniere mit Ergebnis", font_size="0.9em"), align="center", spacing="1"),
-                rx.hstack(rx.checkbox(checked=GolfState.filter_einzel, on_change=GolfState.toggle_einzel),
-                          rx.text("nur Einzel", font_size="0.9em"), align="center", spacing="1"),
-                rx.hstack(rx.checkbox(checked=GolfState.filter_vgw, on_change=GolfState.toggle_vgw),
-                          rx.text("Nur VGW", font_size="0.9em"), align="center", spacing="1"),
                 justify="center", width="100%", spacing="4", padding_bottom="1em", wrap="wrap"
             ),
 
