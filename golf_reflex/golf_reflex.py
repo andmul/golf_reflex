@@ -62,11 +62,25 @@ def load_and_prep_data(dataset_name: str = "AK50"):
         df['HCPRelevant'] = False
 
     # --- STATS CALCULATION ---
+    # Parquet files might have 'par' as a list/array already, CSV as string
     if 'par' in df.columns and 'score' in df.columns:
         def calc_row_deltas(row):
             try:
-                p_list = ast.literal_eval(row['par']) if isinstance(row['par'], str) else []
-                s_list = ast.literal_eval(row['score']) if isinstance(row['score'], str) else []
+                # Handle par list
+                if isinstance(row['par'], str):
+                    p_list = ast.literal_eval(row['par'])
+                elif isinstance(row['par'], (list, np.ndarray)):
+                    p_list = list(row['par'])
+                else:
+                    p_list = []
+
+                # Handle score list
+                if isinstance(row['score'], str):
+                    s_list = ast.literal_eval(row['score'])
+                elif isinstance(row['score'], (list, np.ndarray)):
+                    s_list = list(row['score'])
+                else:
+                    s_list = []
 
                 if not p_list or not s_list: return [0, 0, 0, 0]
 
@@ -238,8 +252,12 @@ class GolfState(rx.State):
 
         # 2. Turnierart Filter
         if self.filter_turnierart == "Einzel":
+            # "Einzel" filter: Includes all tournaments where Spielmodus starts with "Einzel".
+            # This excludes team formats like Scramble, Vierer, etc.
             df = df[df['Spielmodus'].str.startswith('Einzel', na=False)]
         elif self.filter_turnierart == "Vorgabewirksam":
+             # "Vorgabewirksam" filter: A subset of Einzel.
+             # Includes only tournaments explicitly marked as HCPRelevant (VGW) in the database.
              df = df[df['HCPRelevant'] == True]
 
         return df.sort_values('Datum').reset_index(drop=True)
@@ -697,8 +715,7 @@ def dashboard():
                         data=GolfState.figure,
                         use_resize_handler=True,
                         style={"width": "100%", "height": "100%"},
-                        # Disable scrollZoom to prevent mobile scroll hijacking and "reverting" behavior
-                        config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"}
+                        config={"displayModeBar": False, "scrollZoom": True}
                     )
                 ),
                 width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
