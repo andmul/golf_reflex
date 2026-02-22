@@ -598,6 +598,7 @@ def login_form():
                     placeholder="Passwort",
                     type="password",
                     width="250px",
+                    aria_label="Passwort Eingabe",
                 ),
                 rx.cond(
                     GolfState.auth_error,
@@ -677,7 +678,21 @@ def dashboard():
             rx.box(
                 rx.cond(
                     GolfState.filtered_df.empty,
-                    rx.text("Keine Daten", color="gray", padding="40px", text_align="center"),
+                    rx.center(
+                        rx.vstack(
+                            rx.text("⛳", font_size="4em"),
+                            rx.heading("Keine Ergebnisse", size="4", color="gray"),
+                            rx.text(
+                                "Bitte überprüfe deine Filter oder wähle einen anderen Datensatz.",
+                                color="gray",
+                                text_align="center",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        padding="40px",
+                        height="100%",
+                    ),
                     rx.plotly(
                         data=GolfState.figure,
                         use_resize_handler=True,
