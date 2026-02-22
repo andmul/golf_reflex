@@ -7,18 +7,29 @@ import ast
 from typing import List, Optional
 
 MODULE_DIR: str = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH: str = os.path.join(os.path.dirname(MODULE_DIR), "assets", "data.csv")
-
+ASSETS_DIR: str = os.path.join(os.path.dirname(MODULE_DIR), "assets")
 
 # --- 1. DATA LOADING & ROBUST PRE-PROCESSING ---
-# --- REPLACE THIS FUNCTION TO DEBUG ---
-def load_and_prep_data():
-    print("Loading data...")
-    if not os.path.exists(DATA_PATH):
-        print(f"Error: Data file not found at {DATA_PATH}")
-        return pd.DataFrame()
+def load_and_prep_data(dataset_name: str = "AK50"):
+    file_path = os.path.join(ASSETS_DIR, f"{dataset_name}.parquet")
+    print(f"Loading data from {file_path}...")
 
-    df = pd.read_csv(DATA_PATH)
+    if not os.path.exists(file_path):
+        # Fallback to CSV if parquet not found and requesting AK50 (for migration safety)
+        if dataset_name == "AK50":
+            csv_path = os.path.join(ASSETS_DIR, "data.csv")
+            if os.path.exists(csv_path):
+                print(f"Parquet not found. Fallback to CSV: {csv_path}")
+                df = pd.read_csv(csv_path)
+            else:
+                print(f"Error: Data file not found at {file_path} or {csv_path}")
+                return pd.DataFrame()
+        else:
+            print(f"Error: Data file not found at {file_path}")
+            return pd.DataFrame()
+    else:
+        df = pd.read_parquet(file_path)
+
     df['Datum'] = pd.to_datetime(df['Datum'])
     df = df.sort_values('Datum')
 
@@ -40,22 +51,14 @@ def load_and_prep_data():
 
     # --- DEBUGGING VGW (HCPRelevant) ---
     if 'HCPRelevant' in df.columns:
-        print("FOUND 'HCPRelevant' COLUMN.")
-        print("UNIQUE VALUES BEFORE CLEANING:", df['HCPRelevant'].unique())  # <--- LOOK AT THIS IN TERMINAL
-
         # Convert to string and clean
         df['HCPRelevant'] = df['HCPRelevant'].astype(str).str.lower().str.strip()
 
         # Expanded Map for German/English/Numbers
         true_values = ['true', 'yes', '1', '1.0', 'ja', 't', 'y', 'j']
         df['HCPRelevant'] = df['HCPRelevant'].isin(true_values)
-
-        print(f"Total VGW found after cleaning: {len(df[df['HCPRelevant'] == True])}") # <--- CHECK THIS COUNT
     else:
-        print("ERROR: 'HCPRelevant' column NOT found in CSV!")
-        # Check if it has a different case
-        possible_cols = [c for c in df.columns if 'hcp' in c.lower()]
-        print(f"Did you mean one of these? {possible_cols}")
+        print("ERROR: 'HCPRelevant' column NOT found!")
         df['HCPRelevant'] = False
 
     # --- STATS CALCULATION ---
@@ -94,8 +97,6 @@ def load_and_prep_data():
 
     df['Jahr'] = df['Datum'].dt.year
     return df
-# Initialize Data Globally
-df0 = load_and_prep_data()
 
 
 # Helper for sorting
@@ -103,9 +104,6 @@ def get_sort_key(name):
     if ',' in name: return name.split(',')[0].strip().lower()
     return name.lower()
 
-
-unique_players = sorted(df0['Spieler_Name'].unique().tolist(), key=get_sort_key) if not df0.empty else []
-unique_years = sorted(df0['Jahr'].unique().tolist(), reverse=True) if not df0.empty else []
 APP_PASSWORD = "nobi"
 
 
@@ -120,12 +118,51 @@ class GolfState(rx.State):
     selected_player: str = "Alle Spieler"
     selected_year: str = "2025"
 
+    # Dataset Selection
+    selected_dataset: str = "AK50"
+    _data: pd.DataFrame = pd.DataFrame()
+
+    def on_load(self):
+        """Called when the app loads. Initializes default dataset."""
+        self._reload_data()
+
+    def _reload_data(self):
+        self._data = load_and_prep_data(self.selected_dataset)
+        # Reset filters if needed, or validate them against new data
+        if "Spieler_Name" in self._data.columns:
+            # Check if current selected player is valid, else reset
+            players = self.player_options
+            if self.selected_player not in players:
+                 self.selected_player = "Alle Spieler"
+        if "Jahr" in self._data.columns:
+             years = self.year_options
+             if self.selected_year not in years:
+                 # Default to most recent year if available
+                 if len(years) > 1:
+                     self.selected_year = years[1] # [0] is "Alle Jahre"
+                 else:
+                     self.selected_year = "Alle Jahre"
+
+
+    def set_selected_dataset(self, value: str):
+        self.selected_dataset = value
+        self._reload_data()
+
+    @rx.var
+    def available_datasets(self) -> list[str]:
+        files = [f for f in os.listdir(ASSETS_DIR) if f.endswith('.parquet')]
+        return sorted([os.path.splitext(f)[0] for f in files])
+
     @rx.var
     def player_options(self) -> list[str]:
+        if self._data.empty: return ["Alle Spieler"]
+        unique_players = sorted(self._data['Spieler_Name'].unique().tolist(), key=get_sort_key)
         return ["Alle Spieler"] + unique_players
 
     @rx.var
     def year_options(self) -> list[str]:
+        if self._data.empty: return ["Alle Jahre"]
+        unique_years = sorted(self._data['Jahr'].unique().tolist(), reverse=True)
         return ["Alle Jahre"] + [str(year) for year in unique_years]
 
     # --- AUTH ---
@@ -137,6 +174,9 @@ class GolfState(rx.State):
             self.is_authenticated = True
             self.auth_error = ""
             self.password_input = ""
+            # Ensure data is loaded
+            if self._data.empty:
+                self._reload_data()
         else:
             self.auth_error = "Falsches Passwort"
 
@@ -170,9 +210,9 @@ class GolfState(rx.State):
         Independent of Checkboxes (Brutto/Einzel/VGW).
         Used for the 'Turnier Übersicht' cards.
         """
-        if not self.is_authenticated: return pd.DataFrame()
+        if not self.is_authenticated or self._data.empty: return pd.DataFrame()
 
-        df = df0.copy()
+        df = self._data.copy()
 
         if self.selected_player != "Alle Spieler":
             df = df[df['Spieler_Name'] == self.selected_player]
@@ -307,7 +347,7 @@ class GolfState(rx.State):
         # Safely grab the aggregate Par and CR columns
         par_series = df['Par'] if 'Par' in df.columns else pd.Series(["-"] * len(df))
         cr_series = df['CR'] if 'CR' in df.columns else pd.Series(["-"] * len(df))
-        print(df.head(2))
+
         df['HoverText'] = df.apply(lambda r: (
             f"<b>{r['Datum'].strftime('%d.%m.%y')}</b><br>"
             f"{r['Turnier']}<br>"
@@ -317,19 +357,6 @@ class GolfState(rx.State):
             f"<b>Brutto:</b> {int(r['Brutto'])}<br>"
             f"<b>Par:</b> {f'{int(r.get('Par'))} | {int(r.get('uPar', 0)):+,d}' if not pd.isna(r.get('uPar', None)) else r.get('Par')}<br>"
             f"<b>CR:</b> {int(r['cr'])}<br>"
-
-
-
-
-
-            #    f"<b>Date:</b> {row['Datum'].strftime('%d-%m-%y')}<br>"
-            #    f"<b>Turnier:</b> {row.get('Turnier', 'N/A')}<br>"
-            #    f"<b>Club:</b> {row.get('Club', 'N/A')}<br>"
-            #    f"<b>Spielmodus:</b> {row.get('Spielmodus', 'N/A')}<br>"
-            #    f"<b>HCP:</b> {row.get('HCP', 0)}<br>"
-            #    f"<b>Brutto:</b> {int(row.get('Brutto', 0))}<br>"
-            #    f"<b>Par:</b> {f'{row.get('Par')} / {int(row.get('uPar', 0)):+,d}' if not pd.isna(row.get('uPar', None)) else row.get('Par')}"
-
         ), axis=1)
 
         fig = go.Figure()
@@ -601,6 +628,19 @@ def dashboard():
                 rx.button("Abmelden", on_click=GolfState.logout, size="2", variant="soft"),
                 width="100%", padding_y="0.4em",
             ),
+
+            # --- DATASET SELECTOR ---
+            rx.hstack(
+                rx.text("Datensatz:", font_size="0.9em", font_weight="bold"),
+                rx.select(
+                    GolfState.available_datasets,
+                    value=GolfState.selected_dataset,
+                    on_change=GolfState.set_selected_dataset,
+                    width="100%", max_width="400px"
+                ),
+                width="100%", padding_bottom="1em", align="center", spacing="2"
+            ),
+
             rx.vstack(
                 rx.hstack(
                     rx.text("Spieler:", font_size="0.9em", font_weight="bold", width="80px"),
@@ -677,4 +717,4 @@ def index():
 
 
 app = rx.App()
-app.add_page(index)
+app.add_page(index, on_load=GolfState.on_load)
