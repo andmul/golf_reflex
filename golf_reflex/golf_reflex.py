@@ -655,7 +655,8 @@ def dashboard():
                     GolfState.available_datasets,
                     value=GolfState.selected_dataset,
                     on_change=GolfState.set_selected_dataset,
-                    width="100%", max_width="400px"
+                    width="100%", max_width="400px",
+                    aria_label="Datensatz auswählen",
                 ),
                 width="100%", padding_bottom="1em", align="center", spacing="2"
             ),
@@ -663,14 +664,26 @@ def dashboard():
             rx.vstack(
                 rx.hstack(
                     rx.text("Spieler:", font_size="0.9em", font_weight="bold", width="80px"),
-                    rx.select(GolfState.player_options, value=GolfState.selected_player,
-                              on_change=GolfState.set_selected_player, width="100%", max_width="400px"),
+                    rx.select(
+                        GolfState.player_options,
+                        value=GolfState.selected_player,
+                        on_change=GolfState.set_selected_player,
+                        width="100%",
+                        max_width="400px",
+                        aria_label="Spieler auswählen",
+                    ),
                     width="100%",
                 ),
                 rx.hstack(
                     rx.text("Jahr:", font_size="0.9em", font_weight="bold", width="80px"),
-                    rx.select(GolfState.year_options, value=GolfState.selected_year,
-                              on_change=GolfState.set_selected_year, width="100%", max_width="400px"),
+                    rx.select(
+                        GolfState.year_options,
+                        value=GolfState.selected_year,
+                        on_change=GolfState.set_selected_year,
+                        width="100%",
+                        max_width="400px",
+                        aria_label="Jahr auswählen",
+                    ),
                     width="100%",
                 ),
                 width="100%", spacing="2", padding_bottom="1em",
@@ -684,7 +697,8 @@ def dashboard():
                         ["Alle", "Einzel", "Vorgabewirksam"],
                         value=GolfState.filter_turnierart,
                         on_change=GolfState.set_filter_turnierart,
-                        width="180px"
+                        width="180px",
+                        aria_label="Turnierart filtern",
                     ),
                     align="center", spacing="2"
                 ),
