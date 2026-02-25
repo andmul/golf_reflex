@@ -125,6 +125,7 @@ class GolfState(rx.State):
     is_authenticated: bool = False
     password_input: str = ""
     auth_error: str = ""
+    is_loading: bool = False
 
     # Filter states
     filter_brutto: bool = False
@@ -184,15 +185,21 @@ class GolfState(rx.State):
         self.password_input = value
 
     def check_password(self):
-        if self.password_input == APP_PASSWORD:
-            self.is_authenticated = True
-            self.auth_error = ""
-            self.password_input = ""
-            # Ensure data is loaded
-            if self._data.empty:
-                self._reload_data()
-        else:
-            self.auth_error = "Falsches Passwort"
+        self.is_loading = True
+        yield
+        try:
+            if self.password_input == APP_PASSWORD:
+                self.is_authenticated = True
+                self.auth_error = ""
+                self.password_input = ""
+                # Ensure data is loaded
+                if self._data.empty:
+                    self._reload_data()
+            else:
+                self.auth_error = "Falsches Passwort"
+        finally:
+            self.is_loading = False
+            yield
 
     def handle_key_down(self, key: str):
         if key == "Enter": return self.check_password()
@@ -625,6 +632,7 @@ def login_form():
                 rx.button(
                     "Anmelden",
                     on_click=GolfState.check_password,
+                    loading=GolfState.is_loading,
                     width="250px",
                     margin_top="1em",
                 ),
