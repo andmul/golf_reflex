@@ -702,8 +702,14 @@ def dashboard():
                     ),
                     align="center", spacing="2"
                 ),
-                rx.hstack(rx.checkbox(checked=GolfState.filter_brutto, on_change=GolfState.toggle_brutto),
-                          rx.text("nur Turniere mit Ergebnis", font_size="0.9em"), align="center", spacing="1"),
+                rx.hstack(
+                    rx.checkbox(
+                        checked=GolfState.filter_brutto,
+                        on_change=GolfState.toggle_brutto,
+                        aria_label="Nur Turniere mit Ergebnis anzeigen"
+                    ),
+                    rx.text("nur Turniere mit Ergebnis", font_size="0.9em"), align="center", spacing="1"
+                ),
                 justify="center", width="100%", spacing="4", padding_bottom="1em", wrap="wrap"
             ),
 
