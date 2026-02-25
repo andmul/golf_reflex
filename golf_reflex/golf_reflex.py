@@ -99,7 +99,10 @@ def load_and_prep_data(dataset_name: str = "AK50"):
                     diff = score_val - par_val
                     if score_val == 1: aces += 1
                     if diff == -1: birdies += 1
-                    elif diff == -2 and score_val != 1: eagles += 1
+                    elif diff == -2 and score_val != 1:
+                        eagles += 1
+                        #print('Eagle', par_val,score_val)
+                        #print(p_list, s_list, valid_indices)
                     elif diff == -3 and score_val != 1: albatross += 1
 
                 return [birdies, eagles, albatross, aces]
