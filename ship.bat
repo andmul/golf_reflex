@@ -9,12 +9,12 @@ if %errorlevel% neq 0 goto error
 echo.
 echo --- 2. Staging your local changes ---
 git add .
-if %errorlevel% neq 0 goto error
 
 echo.
-echo --- 3. Committing with message: %msg% ---
+echo --- 3. Committing changes ---
+:: We let commit run, but we don't check %errorlevel% immediately after.
+:: This way, if there is "nothing to commit", the script continues to the push.
 git commit -m "%msg%"
-if %errorlevel% neq 0 goto error
 
 echo.
 echo --- 4. Pushing to GitHub ---
@@ -28,7 +28,7 @@ exit /b
 
 :error
 echo.
-echo [ERROR] Something went wrong! The script has stopped to protect your Git history.
-echo Please scroll up to see what failed (e.g., a merge conflict), fix it, and try again.
+echo [ERROR] Something went wrong (likely a Merge Conflict during pull).
+echo Check the output above.
 pause
 exit /b
