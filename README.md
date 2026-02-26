@@ -22,4 +22,3 @@ A Reflex application for visualizing golf performance metrics.
 ## Development
 
 -   The main application code is located in `golf_reflex/golf_reflex.py`.
--   The `ship.bat` script automates Git operations.

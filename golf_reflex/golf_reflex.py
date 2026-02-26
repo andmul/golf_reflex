@@ -99,10 +99,7 @@ def load_and_prep_data(dataset_name: str = "AK50"):
                     diff = score_val - par_val
                     if score_val == 1: aces += 1
                     if diff == -1: birdies += 1
-                    elif diff == -2 and score_val != 1:
-                        eagles += 1
-                        #print('Eagle', par_val,score_val)
-                        #print(p_list, s_list, valid_indices)
+                    elif diff == -2 and score_val != 1: eagles += 1
                     elif diff == -3 and score_val != 1: albatross += 1
 
                 return [birdies, eagles, albatross, aces]
@@ -121,7 +118,7 @@ def get_sort_key(name):
     if ',' in name: return name.split(',')[0].strip().lower()
     return name.lower()
 
-APP_PASSWORD = "fb"
+APP_PASSWORD = "nobi"
 
 
 class GolfState(rx.State):
@@ -452,10 +449,13 @@ class GolfState(rx.State):
                 tickvals=df['ContinuousIndex'],
                 ticktext=df['Datum'].dt.strftime('%d.%m.%y'),
                 range=[initial_min, initial_max],
-                minallowed=abs_min,
-                maxallowed=abs_max,
+                # Remove minallowed/maxallowed to prevent "stuck" zoom at edges
+                # minallowed=abs_min,
+                # maxallowed=abs_max,
                 showgrid=True,
                 gridcolor='rgba(0,0,0,0.1)',
+                fixedrange=False,  # Allow panning on X-axis
+                rangeslider=dict(visible=True, thickness=0.05), # Add scrollbar-like navigation
             ),
             yaxis=dict(fixedrange=True, title="HCP", side='left'),
             yaxis2=dict(overlaying='y', side='right', fixedrange=True, title="Brutto", showgrid=False),
@@ -619,7 +619,7 @@ def login_form():
                     placeholder="Passwort",
                     type="password",
                     width="250px",
-                    aria_label="Passwort Eingabe",
+                    aria_label="Passwort Eingabefeld",
                 ),
                 rx.cond(
                     GolfState.auth_error,
@@ -659,7 +659,7 @@ def dashboard():
                     value=GolfState.selected_dataset,
                     on_change=GolfState.set_selected_dataset,
                     width="100%", max_width="400px",
-                    custom_attrs={"aria-label": "Datensatz auswählen"}
+                    custom_attrs={"aria-label": "Datensatz Auswahl"}
                 ),
                 width="100%", padding_bottom="1em", align="center", spacing="2"
             ),
@@ -669,14 +669,14 @@ def dashboard():
                     rx.text("Spieler:", font_size="0.9em", font_weight="bold", width="80px"),
                     rx.select(GolfState.player_options, value=GolfState.selected_player,
                               on_change=GolfState.set_selected_player, width="100%", max_width="400px",
-                              custom_attrs={"aria-label": "Spieler auswählen"}),
+                              custom_attrs={"aria-label": "Spieler Auswahl"}),
                     width="100%",
                 ),
                 rx.hstack(
                     rx.text("Jahr:", font_size="0.9em", font_weight="bold", width="80px"),
                     rx.select(GolfState.year_options, value=GolfState.selected_year,
                               on_change=GolfState.set_selected_year, width="100%", max_width="400px",
-                              custom_attrs={"aria-label": "Jahr auswählen"}),
+                              custom_attrs={"aria-label": "Jahr Auswahl"}),
                     width="100%",
                 ),
                 width="100%", spacing="2", padding_bottom="1em",
@@ -691,11 +691,11 @@ def dashboard():
                         value=GolfState.filter_turnierart,
                         on_change=GolfState.set_filter_turnierart,
                         width="180px",
-                        custom_attrs={"aria-label": "Turnierart filtern"}
+                        custom_attrs={"aria-label": "Turnierart Auswahl"}
                     ),
                     align="center", spacing="2"
                 ),
-                rx.hstack(rx.checkbox(checked=GolfState.filter_brutto, on_change=GolfState.toggle_brutto, aria_label="Nur Turniere mit Ergebnis anzeigen"),
+                rx.hstack(rx.checkbox(checked=GolfState.filter_brutto, on_change=GolfState.toggle_brutto),
                           rx.text("nur Turniere mit Ergebnis", font_size="0.9em"), align="center", spacing="1"),
                 justify="center", width="100%", spacing="4", padding_bottom="1em", wrap="wrap"
             ),
@@ -703,26 +703,13 @@ def dashboard():
             rx.box(
                 rx.cond(
                     GolfState.filtered_df.empty,
-                    rx.center(
-                        rx.vstack(
-                            rx.text("⛳", font_size="4em"),
-                            rx.heading("Keine Ergebnisse", size="4", color="gray"),
-                            rx.text(
-                                "Bitte überprüfe deine Filter oder wähle einen anderen Datensatz.",
-                                color="gray",
-                                text_align="center",
-                            ),
-                            spacing="2",
-                            align="center",
-                        ),
-                        padding="40px",
-                        height="100%",
-                    ),
+                    rx.text("Keine Daten", color="gray", padding="40px", text_align="center"),
                     rx.plotly(
                         data=GolfState.figure,
                         use_resize_handler=True,
                         style={"width": "100%", "height": "100%"},
-                        config={"displayModeBar": False, "scrollZoom": True}
+                        # Disable scrollZoom for better mobile experience
+                        config={"displayModeBar": False, "scrollZoom": False}
                     )
                 ),
                 width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
