@@ -121,7 +121,7 @@ def get_sort_key(name):
     if ',' in name: return name.split(',')[0].strip().lower()
     return name.lower()
 
-APP_PASSWORD = "nobi"
+APP_PASSWORD = "fb"
 
 
 class GolfState(rx.State):
