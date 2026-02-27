@@ -1,9 +1,10 @@
 import reflex as rx
-import plotly.graph_objects as go
+import reflex_echarts as rx_echarts
 import pandas as pd
 import numpy as np
 import os
 import ast
+import json
 from typing import List, Optional
 
 MODULE_DIR: str = os.path.dirname(os.path.abspath(__file__))
@@ -118,10 +119,11 @@ def get_sort_key(name):
     if ',' in name: return name.split(',')[0].strip().lower()
     return name.lower()
 
-APP_PASSWORD = "nobi"
+# Secure password handling: Use env var, fallback to default if not set (for backward compat/demo)
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "nobi")
 
 
-class GolfState(rx.State):
+class GolfStateEc(rx.State):
     is_authenticated: bool = False
     password_input: str = ""
     auth_error: str = ""
@@ -350,23 +352,134 @@ class GolfState(rx.State):
         return summary.to_dict('records')
 
     @rx.var
-    def figure(self) -> go.Figure:
+    def echarts_option(self) -> dict:
         if self.filtered_df.empty:
-            return go.Figure()
+            return {}
 
         df = self.filtered_df.copy()
         df['ContinuousIndex'] = range(len(df))
 
-        # Safely grab Par (handling lowercase/uppercase) and CR columns
-        par_series = df['Par'] if 'Par' in df.columns else (
-            df['par'] if 'par' in df.columns else pd.Series(["-"] * len(df)))
-        cr_series = df['CR'] if 'CR' in df.columns else pd.Series(["-"] * len(df))
+        dates = df['Datum'].dt.strftime('%d.%m.%y').tolist()
+        brutto_data = df['Brutto'].astype(int).tolist()
+        hcp_data = df['HCP'].tolist()
 
-        # Safely grab the aggregate Par and CR columns
-        par_series = df['Par'] if 'Par' in df.columns else pd.Series(["-"] * len(df))
-        cr_series = df['CR'] if 'CR' in df.columns else pd.Series(["-"] * len(df))
+        # Determine uPar data for labels
+        upar_data = []
+        for _, row in df.iterrows():
+            if not pd.isna(row.get('uPar')):
+                val = int(row['uPar'])
+                upar_data.append({"value": row['Brutto'], "symbol": "none", "label": {"show": True, "formatter": f"{val:+}", "position": "top", "color": "black", "fontSize": 9, "fontWeight": "bold"}})
+            else:
+                upar_data.append(None) # Or appropriate empty value
 
-        df['HoverText'] = df.apply(lambda r: (
+        # Winter breaks lines
+        mark_lines = []
+        if len(df) > 1:
+            date_diffs = df['Datum'].diff().dt.days
+            gap_indices = df.index[date_diffs > 50].tolist()
+            for idx in gap_indices:
+                if idx > 0:
+                    try:
+                         # Calculate position similar to Plotly logic. ECharts xAxis is categorical by default (index based)
+                         # so we can use the index directly.
+                         # Since ContinuousIndex is 0..N-1, we can find the split point.
+                         # Plotly was: (pos_current + pos_prev) / 2
+                         # Here: we need the index in the current filtered df
+
+                         # Get integer location in the current df
+                         iloc_idx = df.index.get_loc(idx)
+                         # The gap is before this index, so between iloc_idx-1 and iloc_idx
+                         mark_pos = iloc_idx - 0.5
+                         mark_lines.append({"xAxis": mark_pos})
+                    except:
+                        pass
+
+        series = []
+
+        # Brutto Bar Series
+        series.append({
+            "name": "Brutto",
+            "type": "bar",
+            "data": brutto_data,
+            "yAxisIndex": 1,
+            "itemStyle": {"color": "rgba(84, 245, 66, 0.6)"},
+            "label": {
+                "show": True,
+                "position": "inside",
+                "color": "black",
+                "fontSize": 14
+            },
+            "tooltip": {"show": False} # We use a shared tooltip
+        })
+
+        # HCP Line Series
+        if self.selected_player != "Alle Spieler":
+            series.append({
+                "name": "HCP",
+                "type": "line",
+                "data": hcp_data,
+                "yAxisIndex": 0,
+                "smooth": False,
+                "symbol": "circle",
+                "symbolSize": 6,
+                "itemStyle": {"color": "royalblue"},
+                "lineStyle": {"width": 1.5, "color": "royalblue"},
+                "tooltip": {"show": False}
+            })
+
+        # uPar Scatter/Label Series (hacky way to put labels on top if we want separate series,
+        # but ECharts supports rich labels. Alternatively, use a scatter series on top of bars)
+        # The Plotly code used a separate scatter trace for text.
+        # In ECharts, we can try adding a second scatter series with transparency just for labels.
+
+        # Filter valid uPar points
+        upar_points = []
+        for i, val in enumerate(upar_data):
+            if val is not None:
+                upar_points.append([i, val["value"], val["label"]["formatter"]])
+
+        if upar_points:
+             series.append({
+                "name": "Über Par",
+                "type": "scatter",
+                "data": [[p[0], p[1]] for p in upar_points],
+                "yAxisIndex": 1,
+                "symbolSize": 1, # Tiny symbol
+                "itemStyle": {"opacity": 0}, # Invisible
+                "label": {
+                    "show": True,
+                    "position": "top",
+                    "formatter": "{b}", # We need to pass the label text.
+                    # Actually better to use 'data' as objects with label prop?
+                    # Let's reconstruct data
+                },
+                 # Re-doing data construction for this series
+                "data": [
+                    {
+                        "value": [p[0], p[1]],
+                        "label": {
+                            "show": True,
+                            "formatter": p[2],
+                            "position": "top",
+                            "color": "black",
+                            "fontSize": 10,
+                            "fontWeight": "bold",
+                            "distance": 5
+                        }
+                    } for p in upar_points
+                ],
+                "z": 10,
+                "tooltip": {"show": False}
+             })
+
+        # Prepare tooltip data mapping
+        # We need to access row data in the tooltip formatter.
+        # ECharts formatter callbacks run in JS. passing massive data might be tricky.
+        # Standard approach: Put all info into 'data' or mapped arrays and access via index.
+        # However, Reflex runs Python. We can construct a list of tooltip strings and access them by index.
+
+        tooltip_texts = df.apply(lambda r: (
+            f"<div style='text-align:left;'>"
             f"<b>{r['Datum'].strftime('%d.%m.%y')}</b><br>"
             f"{r['Turnier']}<br>"
             f"{r['Club']}<br>"
@@ -374,96 +487,107 @@ class GolfState(rx.State):
             f"<b>Spielmodus:</b> {r.get('Spielmodus', 'N/A')}<br>"
             f"<b>Brutto:</b> {int(r['Brutto'])}<br>"
             f"<b>Par:</b> {f'{int(r.get('Par'))} | {int(r.get('uPar', 0)):+,d}' if not pd.isna(r.get('uPar', None)) else r.get('Par')}<br>"
-            f"<b>CR:</b> {int(r['cr'])}<br>"
-        ), axis=1)
+            f"<b>CR:</b> {int(r['cr']) if pd.notna(r.get('cr')) else 'N/A'}<br>"
+            f"</div>"
+        ) if pd.notna(r.get('Par')) else "", axis=1).tolist()
 
-        fig = go.Figure()
+        # Safe handling if Par is nan, just in case, though the above logic tries to handle it.
+        # Better: Ensure all required fields have defaults before generating string.
 
-        # 2. HCP Line (Hidden if Alle Spieler)
-        if self.selected_player != "Alle Spieler":
-            fig.add_trace(go.Scatter(
-                x=df['ContinuousIndex'], y=df['HCP'],
-                mode='lines+markers',
-                name='HCP',
-                line=dict(width=1.5, color='royalblue'),
-                marker=dict(size=4, color='royalblue'),
-                text=df['HoverText'],
-                hoverinfo='text',
-            ))
+        # Serialize to JSON string to be safely embedded in the JS function
+        tooltip_json = json.dumps(tooltip_texts)
 
-        # 3. Brutto Bars
-        fig.add_trace(go.Bar(
-            x=df['ContinuousIndex'], y=df['Brutto'],
-            name='Brutto',
-            marker_color='rgba(84, 245, 66, 0.6)',
-            text=df['Brutto'].astype(int),
-            textposition='inside',
-            textfont=dict(size=18, color='black'),
-            hovertext=df['HoverText'],
-            hoverinfo='text',
-            yaxis='y2',
-            marker_line_width=0,
-        ))
+        option = {
+            "tooltip": {
+                "trigger": "axis",
+                "axisPointer": {"type": "shadow"},
+                "backgroundColor": "rgba(255, 255, 255, 0.9)",
+                "padding": 10,
+                "textStyle": {"color": "#333"},
+                "extraCssText": "box-shadow: 0 0 3px rgba(0, 0, 0, 0.3);",
+                 # JS function string to render custom html.
+                 # params[0].dataIndex gives the index.
+                 # We need to inject the tooltip_texts array into the JS context.
+                "formatter": f"""function (params) {{
+                    var texts = {tooltip_json};
+                    var index = params[0].dataIndex;
+                    return texts[index];
+                }}"""
+            },
+            "legend": {
+                "data": ["HCP", "Brutto"],
+                "top": 0
+            },
+            "grid": {
+                "left": "3%",
+                "right": "3%",
+                "bottom": "15%", # Space for dataZoom
+                "containLabel": True
+            },
+            "xAxis": {
+                "type": "category",
+                "data": dates,
+                "axisTick": {"alignWithLabel": True},
+                "axisLine": {"lineStyle": {"color": "#ccc"}},
+                "axisLabel": {"color": "#333"}
+            },
+            "yAxis": [
+                {
+                    "type": "value",
+                    "name": "HCP",
+                    "position": "left",
+                    "axisLine": {"show": True, "lineStyle": {"color": "royalblue"}},
+                    "axisLabel": {"formatter": "{value}"},
+                    "splitLine": {"show": True, "lineStyle": {"type": "dashed"}}
+                },
+                {
+                    "type": "value",
+                    "name": "Brutto",
+                    "position": "right",
+                    "axisLine": {"show": True, "lineStyle": {"color": "green"}},
+                    "axisLabel": {"formatter": "{value}"},
+                    "splitLine": {"show": False}
+                }
+            ],
+            "dataZoom": [
+                {
+                    "type": "slider",
+                    "show": True,
+                    "xAxisIndex": [0],
+                    "start": 0, # Should calculate based on last 20 items or similar logic
+                    "end": 100,
+                    "bottom": 10
+                },
+                {
+                    "type": "inside",
+                    "xAxisIndex": [0],
+                    "start": 0,
+                    "end": 100
+                }
+            ],
+            "series": series
+        }
 
-        # 4. uPar Labels
-        df_upar = df.dropna(subset=['uPar'])
-        if not df_upar.empty:
-            upar_text = df_upar['uPar'].astype(int).apply(lambda x: f"{x:+}")
-            fig.add_trace(go.Scatter(
-                x=df_upar['ContinuousIndex'], y=df_upar['Brutto'],
-                mode='text',
-                name='Über Par',
-                text=upar_text,
-                textfont=dict(size=9, color='black', weight='bold'),
-                hoverinfo='skip',
-                yaxis='y2',
-                textposition='top center',
-                cliponaxis=False
-            ))
-
-        # 5. Winter Breaks
-        if len(df) > 1:
-            date_diffs = df['Datum'].diff().dt.days
-            gap_indices = df.index[date_diffs > 50].tolist()
-            for idx in gap_indices:
-                if idx > 0:
-                    try:
-                        pos_current = df.loc[idx, 'ContinuousIndex']
-                        pos_prev = df.loc[df.index[df.index.get_loc(idx) - 1], 'ContinuousIndex']
-                        pos = (pos_current + pos_prev) / 2
-                        fig.add_vline(x=pos, line_dash="dash", line_color="red", opacity=0.4)
-                    except:
-                        pass
-
+        # Handle initial zoom logic (show last 20 items roughly)
         total_bars = len(df)
-        initial_min = max(-0.5, total_bars - 20.5)
-        initial_max = total_bars - 0.5
-        abs_min = -0.5
-        abs_max = total_bars - 0.5
+        if total_bars > 20:
+             start_pct = max(0, (total_bars - 20) / total_bars * 100)
+             option["dataZoom"][0]["start"] = start_pct
+             option["dataZoom"][1]["start"] = start_pct
 
-        fig.update_layout(
-            template='plotly_white',
-            hovermode='closest',
-            dragmode='pan',
-            xaxis=dict(
-                tickvals=df['ContinuousIndex'],
-                ticktext=df['Datum'].dt.strftime('%d.%m.%y'),
-                range=[initial_min, initial_max],
-                # Remove minallowed/maxallowed to prevent "stuck" zoom at edges
-                # minallowed=abs_min,
-                # maxallowed=abs_max,
-                showgrid=True,
-                gridcolor='rgba(0,0,0,0.1)',
-                fixedrange=False,  # Allow panning on X-axis
-                rangeslider=dict(visible=True, thickness=0.05), # Add scrollbar-like navigation
-            ),
-            yaxis=dict(fixedrange=True, title="HCP", side='left'),
-            yaxis2=dict(overlaying='y', side='right', fixedrange=True, title="Brutto", showgrid=False),
-            margin=dict(l=10, r=10, t=40, b=10),
-            legend=dict(orientation="h", y=1.1),
-        )
+        # Add MarkLines for Winter Breaks
+        if mark_lines:
+             # Add to the Brutto series (index 0 if HCP hidden, or index 1)
+             # Better to add to the first series present.
+             if series:
+                 series[0]["markLine"] = {
+                     "symbol": "none",
+                     "label": {"show": False},
+                     "lineStyle": {"type": "dashed", "color": "red", "opacity": 0.4},
+                     "data": mark_lines
+                 }
 
-        return fig
+        return option
 
 
 # --- UI COMPONENTS ---
@@ -476,7 +600,7 @@ def round_card(r: dict):
                     rx.text(r["date"], font_weight="bold", font_size="0.8em"),
                     rx.text(r["club"], font_size="0.7em", color="gray"),
                     rx.cond(
-                        GolfState.selected_player == "Alle Spieler",
+                        GolfStateEc.selected_player == "Alle Spieler",
                         rx.text(r["player"], font_size="0.7em", color="#2c5282", font_weight="bold"),
                     ),
                     align_items="start", spacing="0"
@@ -524,7 +648,7 @@ def player_summary_table():
                         rx.table.column_header_cell("Akt. HCP"),
                     )
                 ),
-                rx.table.body(rx.foreach(GolfState.player_summary_list, player_summary_row)),
+                rx.table.body(rx.foreach(GolfStateEc.player_summary_list, player_summary_row)),
                 width="100%", variant="surface"
             ),
         ),
@@ -545,20 +669,20 @@ def scoring_stats_card():
     return rx.box(
         rx.vstack(
             rx.heading("Scoring Statistiken", size="3"),
-            rx.text(GolfState.stats_title, font_size="0.8em", color="gray"),
+            rx.text(GolfStateEc.stats_title, font_size="0.8em", color="gray"),
             rx.hstack(
-                stat_box("Birdies", GolfState.scoring_stats["birdie"], "#FFD700", "rgba(255, 215, 0, 0.1)"),
-                stat_box("Eagles", GolfState.scoring_stats["eagle"], "#FF8C00", "rgba(255, 140, 0, 0.1)"),
-                stat_box("Albatros", GolfState.scoring_stats["albatross"], "#8B00FF", "rgba(139, 0, 255, 0.1)"),
-                stat_box("Ace", GolfState.scoring_stats["ace"], "#FF0000", "rgba(255, 0, 0, 0.1)"),
+                stat_box("Birdies", GolfStateEc.scoring_stats["birdie"], "#FFD700", "rgba(255, 215, 0, 0.1)"),
+                stat_box("Eagles", GolfStateEc.scoring_stats["eagle"], "#FF8C00", "rgba(255, 140, 0, 0.1)"),
+                stat_box("Albatros", GolfStateEc.scoring_stats["albatross"], "#8B00FF", "rgba(139, 0, 255, 0.1)"),
+                stat_box("Ace", GolfStateEc.scoring_stats["ace"], "#FF0000", "rgba(255, 0, 0, 0.1)"),
                 width="100%", spacing="2", justify="between"
             ),
             rx.hstack(
                 rx.text("Gesamt: ", font_size="0.9em", color="gray"),
-                rx.text(GolfState.scoring_total, font_size="0.9em", font_weight="bold"),
+                rx.text(GolfStateEc.scoring_total, font_size="0.9em", font_weight="bold"),
                 rx.spacer(),
                 rx.text("Ø pro Runde: ", font_size="0.9em", color="gray"),
-                rx.text(GolfState.scoring_average, font_size="0.9em", font_weight="bold"),
+                rx.text(GolfStateEc.scoring_average, font_size="0.9em", font_weight="bold"),
                 width="100%", justify="between", padding_top="0.5em"
             ),
             width="100%", padding="1em", background_color="#fcfcfc", border_radius="lg", border="1px solid #e0e0e0",
@@ -575,26 +699,26 @@ def tournament_summary_card():
             rx.grid(
                 rx.vstack(
                     rx.text("Gesamt", font_size="0.8em", color="gray"),
-                    rx.text(GolfState.tournament_counts["total"], font_size="1.5em", font_weight="bold"),
+                    rx.text(GolfStateEc.tournament_counts["total"], font_size="1.5em", font_weight="bold"),
                     align="center", spacing="0", padding="0.5em", border_radius="md", background_color="#f0f0f0",
                     width="100%"
                 ),
                 rx.vstack(
                     rx.text("Mit Ergebnis", font_size="0.8em", color="gray"),
-                    rx.text(GolfState.tournament_counts["with_result"], font_size="1.5em", font_weight="bold",
+                    rx.text(GolfStateEc.tournament_counts["with_result"], font_size="1.5em", font_weight="bold",
                             color="green"),
                     align="center", spacing="0", padding="0.5em", border_radius="md",
                     background_color="rgba(0, 255, 0, 0.05)", width="100%"
                 ),
                 rx.vstack(
                     rx.text("Einzel", font_size="0.8em", color="gray"),
-                    rx.text(GolfState.tournament_counts["single"], font_size="1.5em", font_weight="bold", color="blue"),
+                    rx.text(GolfStateEc.tournament_counts["single"], font_size="1.5em", font_weight="bold", color="blue"),
                     align="center", spacing="0", padding="0.5em", border_radius="md",
                     background_color="rgba(0, 0, 255, 0.05)", width="100%"
                 ),
                 rx.vstack(
                     rx.text("Vorgabewirksam", font_size="0.8em", color="gray"),
-                    rx.text(GolfState.tournament_counts["vgw"], font_size="1.5em", font_weight="bold", color="purple"),
+                    rx.text(GolfStateEc.tournament_counts["vgw"], font_size="1.5em", font_weight="bold", color="purple"),
                     align="center", spacing="0", padding="0.5em", border_radius="md",
                     background_color="rgba(128, 0, 128, 0.05)", width="100%"
                 ),
@@ -613,21 +737,21 @@ def login_form():
                 rx.heading("Golf Performance Dashboard", size="6", padding_bottom="1em"),
                 rx.text("Bitte Passwort eingeben", color="gray", padding_bottom="0.5em"),
                 rx.input(
-                    value=GolfState.password_input,
-                    on_change=GolfState.set_password_input,
-                    on_key_down=GolfState.handle_key_down,
+                    value=GolfStateEc.password_input,
+                    on_change=GolfStateEc.set_password_input,
+                    on_key_down=GolfStateEc.handle_key_down,
                     placeholder="Passwort",
                     type="password",
                     width="250px",
                     aria_label="Passwort Eingabefeld",
                 ),
                 rx.cond(
-                    GolfState.auth_error,
-                    rx.text(GolfState.auth_error, color="red", font_size="0.9em"),
+                    GolfStateEc.auth_error,
+                    rx.text(GolfStateEc.auth_error, color="red", font_size="0.9em"),
                 ),
                 rx.button(
                     "Anmelden",
-                    on_click=GolfState.check_password,
+                    on_click=GolfStateEc.check_password,
                     width="250px",
                     margin_top="1em",
                 ),
@@ -647,7 +771,7 @@ def dashboard():
             rx.hstack(
                 rx.heading("🏌️ Golf Performance", size="6"),
                 rx.spacer(),
-                rx.button("Abmelden", on_click=GolfState.logout, size="2", variant="soft"),
+                rx.button("Abmelden", on_click=GolfStateEc.logout, size="2", variant="soft"),
                 width="100%", padding_y="0.4em",
             ),
 
@@ -655,9 +779,9 @@ def dashboard():
             rx.hstack(
                 rx.text("Datensatz:", font_size="0.9em", font_weight="bold"),
                 rx.select(
-                    GolfState.available_datasets,
-                    value=GolfState.selected_dataset,
-                    on_change=GolfState.set_selected_dataset,
+                    GolfStateEc.available_datasets,
+                    value=GolfStateEc.selected_dataset,
+                    on_change=GolfStateEc.set_selected_dataset,
                     width="100%", max_width="400px",
                     custom_attrs={"aria-label": "Datensatz Auswahl"}
                 ),
@@ -667,15 +791,15 @@ def dashboard():
             rx.vstack(
                 rx.hstack(
                     rx.text("Spieler:", font_size="0.9em", font_weight="bold", width="80px"),
-                    rx.select(GolfState.player_options, value=GolfState.selected_player,
-                              on_change=GolfState.set_selected_player, width="100%", max_width="400px",
+                    rx.select(GolfStateEc.player_options, value=GolfStateEc.selected_player,
+                              on_change=GolfStateEc.set_selected_player, width="100%", max_width="400px",
                               custom_attrs={"aria-label": "Spieler Auswahl"}),
                     width="100%",
                 ),
                 rx.hstack(
                     rx.text("Jahr:", font_size="0.9em", font_weight="bold", width="80px"),
-                    rx.select(GolfState.year_options, value=GolfState.selected_year,
-                              on_change=GolfState.set_selected_year, width="100%", max_width="400px",
+                    rx.select(GolfStateEc.year_options, value=GolfStateEc.selected_year,
+                              on_change=GolfStateEc.set_selected_year, width="100%", max_width="400px",
                               custom_attrs={"aria-label": "Jahr Auswahl"}),
                     width="100%",
                 ),
@@ -688,28 +812,25 @@ def dashboard():
                     rx.text("Turnierart:", font_size="0.9em", font_weight="bold"),
                     rx.select(
                         ["Alle", "Einzel", "Vorgabewirksam"],
-                        value=GolfState.filter_turnierart,
-                        on_change=GolfState.set_filter_turnierart,
+                        value=GolfStateEc.filter_turnierart,
+                        on_change=GolfStateEc.set_filter_turnierart,
                         width="180px",
                         custom_attrs={"aria-label": "Turnierart Auswahl"}
                     ),
                     align="center", spacing="2"
                 ),
-                rx.hstack(rx.checkbox(checked=GolfState.filter_brutto, on_change=GolfState.toggle_brutto),
+                rx.hstack(rx.checkbox(checked=GolfStateEc.filter_brutto, on_change=GolfStateEc.toggle_brutto),
                           rx.text("nur Turniere mit Ergebnis", font_size="0.9em"), align="center", spacing="1"),
                 justify="center", width="100%", spacing="4", padding_bottom="1em", wrap="wrap"
             ),
 
             rx.box(
                 rx.cond(
-                    GolfState.filtered_df.empty,
+                    GolfStateEc.filtered_df.empty,
                     rx.text("Keine Daten", color="gray", padding="40px", text_align="center"),
-                    rx.plotly(
-                        data=GolfState.figure,
-                        use_resize_handler=True,
+                    rx_echarts.echarts(
+                        option=GolfStateEc.echarts_option,
                         style={"width": "100%", "height": "100%"},
-                        # Disable scrollZoom for better mobile experience
-                        config={"displayModeBar": False, "scrollZoom": False}
                     )
                 ),
                 width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
@@ -721,14 +842,14 @@ def dashboard():
 
             rx.vstack(
                 rx.heading("Letzte 10 Runden", size="3"),
-                rx.foreach(GolfState.last_five_rounds, round_card),
+                rx.foreach(GolfStateEc.last_five_rounds, round_card),
                 width="100%", background_color="#fcfcfc", padding="1.2em", border_radius="lg",
                 border="1px solid #e0e0e0", box_shadow="sm"
             ),
 
             # --- CONDITIONAL TABLE ---
             rx.cond(
-                GolfState.selected_player == "Alle Spieler",
+                GolfStateEc.selected_player == "Alle Spieler",
                 player_summary_table(),
             ),
 
@@ -739,8 +860,8 @@ def dashboard():
 
 
 def index():
-    return rx.cond(GolfState.is_authenticated, dashboard(), login_form())
+    return rx.cond(GolfStateEc.is_authenticated, dashboard(), login_form())
 
 
 app = rx.App()
-app.add_page(index, on_load=GolfState.on_load)
+app.add_page(index, on_load=GolfStateEc.on_load)
