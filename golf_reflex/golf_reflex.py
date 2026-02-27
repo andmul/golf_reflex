@@ -1,9 +1,10 @@
 import reflex as rx
-import plotly.graph_objects as go
+import reflex_echarts as rx_echarts
 import pandas as pd
 import numpy as np
 import os
 import ast
+import json
 from typing import List, Optional
 
 MODULE_DIR: str = os.path.dirname(os.path.abspath(__file__))
@@ -118,7 +119,8 @@ def get_sort_key(name):
     if ',' in name: return name.split(',')[0].strip().lower()
     return name.lower()
 
-APP_PASSWORD = "nobi"
+# Secure password handling: Use env var, fallback to default if not set (for backward compat/demo)
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "nobi")
 
 
 class GolfState(rx.State):
@@ -350,120 +352,292 @@ class GolfState(rx.State):
         return summary.to_dict('records')
 
     @rx.var
-    def figure(self) -> go.Figure:
+    def echarts_option(self) -> dict:
         if self.filtered_df.empty:
-            return go.Figure()
+            return {}
 
         df = self.filtered_df.copy()
         df['ContinuousIndex'] = range(len(df))
 
-        # Safely grab Par (handling lowercase/uppercase) and CR columns
-        par_series = df['Par'] if 'Par' in df.columns else (
-            df['par'] if 'par' in df.columns else pd.Series(["-"] * len(df)))
-        cr_series = df['CR'] if 'CR' in df.columns else pd.Series(["-"] * len(df))
+        dates = df['Datum'].dt.strftime('%d.%m.%y').tolist()
+        brutto_data = df['Brutto'].astype(int).tolist()
+        hcp_data = df['HCP'].tolist()
 
-        # Safely grab the aggregate Par and CR columns
-        par_series = df['Par'] if 'Par' in df.columns else pd.Series(["-"] * len(df))
-        cr_series = df['CR'] if 'CR' in df.columns else pd.Series(["-"] * len(df))
+        # Determine uPar data for labels
+        # Fix for label issue: ensure we pass label content correctly
+        upar_data = []
+        for i, row in df.iterrows():
+            if not pd.isna(row.get('uPar')):
+                val = int(row['uPar'])
+                # ECharts label formatter for scatter can access value
+                # Using 3rd dimension [x, y, label] for scatter
+                upar_data.append([row['ContinuousIndex'], row['Brutto'], f"{val:+}"])
 
-        df['HoverText'] = df.apply(lambda r: (
-            f"<b>{r['Datum'].strftime('%d.%m.%y')}</b><br>"
-            f"{r['Turnier']}<br>"
-            f"{r['Club']}<br>"
-            f"<b>Spieler:</b> {r['Spieler_Name']}<br>"
-            f"<b>Spielmodus:</b> {r.get('Spielmodus', 'N/A')}<br>"
-            f"<b>Brutto:</b> {int(r['Brutto'])}<br>"
-            f"<b>Par:</b> {f'{int(r.get('Par'))} | {int(r.get('uPar', 0)):+,d}' if not pd.isna(r.get('uPar', None)) else r.get('Par')}<br>"
-            f"<b>CR:</b> {int(r['cr'])}<br>"
-        ), axis=1)
-
-        fig = go.Figure()
-
-        # 2. HCP Line (Hidden if Alle Spieler)
-        if self.selected_player != "Alle Spieler":
-            fig.add_trace(go.Scatter(
-                x=df['ContinuousIndex'], y=df['HCP'],
-                mode='lines+markers',
-                name='HCP',
-                line=dict(width=1.5, color='royalblue'),
-                marker=dict(size=4, color='royalblue'),
-                text=df['HoverText'],
-                hoverinfo='text',
-            ))
-
-        # 3. Brutto Bars
-        fig.add_trace(go.Bar(
-            x=df['ContinuousIndex'], y=df['Brutto'],
-            name='Brutto',
-            marker_color='rgba(84, 245, 66, 0.6)',
-            text=df['Brutto'].astype(int),
-            textposition='inside',
-            textfont=dict(size=18, color='black'),
-            hovertext=df['HoverText'],
-            hoverinfo='text',
-            yaxis='y2',
-            marker_line_width=0,
-        ))
-
-        # 4. uPar Labels
-        df_upar = df.dropna(subset=['uPar'])
-        if not df_upar.empty:
-            upar_text = df_upar['uPar'].astype(int).apply(lambda x: f"{x:+}")
-            fig.add_trace(go.Scatter(
-                x=df_upar['ContinuousIndex'], y=df_upar['Brutto'],
-                mode='text',
-                name='Über Par',
-                text=upar_text,
-                textfont=dict(size=9, color='black', weight='bold'),
-                hoverinfo='skip',
-                yaxis='y2',
-                textposition='top center',
-                cliponaxis=False
-            ))
-
-        # 5. Winter Breaks
+        # Winter breaks lines
+        mark_lines = []
         if len(df) > 1:
             date_diffs = df['Datum'].diff().dt.days
             gap_indices = df.index[date_diffs > 50].tolist()
             for idx in gap_indices:
                 if idx > 0:
                     try:
-                        pos_current = df.loc[idx, 'ContinuousIndex']
-                        pos_prev = df.loc[df.index[df.index.get_loc(idx) - 1], 'ContinuousIndex']
-                        pos = (pos_current + pos_prev) / 2
-                        fig.add_vline(x=pos, line_dash="dash", line_color="red", opacity=0.4)
+                         iloc_idx = df.index.get_loc(idx)
+                         mark_pos = iloc_idx - 0.5
+                         mark_lines.append({"xAxis": mark_pos})
                     except:
                         pass
 
+        series = []
+
+        # Brutto Bar Series
+        series.append({
+            "name": "Brutto",
+            "type": "bar",
+            "data": brutto_data,
+            "yAxisIndex": 1,
+            "itemStyle": {"color": "rgba(84, 245, 66, 0.6)"},
+            "label": {
+                "show": True,
+                "position": "inside",
+                "color": "black",
+                "fontSize": 12, # Slightly smaller font
+                "rotate": 90, # Rotate for better fit on narrow bars
+                "formatter": "{c}"
+            },
+            # Remove custom tooltip formatter from here, rely on global or simple one
+        })
+
+        # HCP Line Series
+        if self.selected_player != "Alle Spieler":
+            series.append({
+                "name": "HCP",
+                "type": "line",
+                "data": hcp_data,
+                "yAxisIndex": 0,
+                "smooth": False,
+                "symbol": "circle",
+                "symbolSize": 6,
+                "itemStyle": {"color": "royalblue"},
+                "lineStyle": {"width": 1.5, "color": "royalblue"},
+            })
+
+        # uPar Scatter Series
+        if upar_data:
+             series.append({
+                "name": "Über Par",
+                "type": "scatter",
+                "yAxisIndex": 1,
+                "symbolSize": 1,
+                "itemStyle": {"opacity": 0},
+                "data": upar_data, # [x, y, label]
+                "label": {
+                    "show": True,
+                    "position": "top",
+                    "formatter": "{@2}", # Use the 3rd dimension (index 2)
+                    "color": "black",
+                    "fontSize": 10,
+                    "fontWeight": "bold",
+                    "distance": 5
+                },
+                "z": 10
+             })
+
+        # Simplified Tooltip
+        # We will embed the critical data directly into the 'Brutto' series 'data' array as objects
+        # if we want per-point tooltips, but for simplicity and stability, let's use a standard formatter
+        # that shows Series Name: Value.
+        # However, the user wants "all the hover tooltips" (Date, Club, Tournament, etc).
+        # To achieve this SAFELY without huge injection, we can put the extra info into the 'dataset'
+        # or dimensions. ECharts supports 'dataset'.
+
+        # Creating a dataset source structure
+        # dimension 0: Date
+        # dimension 1: Brutto
+        # dimension 2: HCP
+        # dimension 3: Tooltip HTML
+
+        dataset_source = []
+        for i, row in df.iterrows():
+            tooltip_html = (
+                f"<div style='text-align:left;'>"
+                f"<b>{row['Datum'].strftime('%d.%m.%y')}</b><br>"
+                f"{row['Turnier']}<br>"
+                f"{row['Club']}<br>"
+                f"<b>Spieler:</b> {row['Spieler_Name']}<br>"
+                f"<b>Spielmodus:</b> {row.get('Spielmodus', 'N/A')}<br>"
+                f"<b>Brutto:</b> {int(row['Brutto'])}<br>"
+                f"<b>Par:</b> {f'{int(row.get('Par'))} | {int(row.get('uPar', 0)):+,d}' if not pd.isna(row.get('uPar', None)) else row.get('Par')}<br>"
+                f"<b>CR:</b> {int(row['cr']) if pd.notna(row.get('cr')) else 'N/A'}<br>"
+                f"</div>"
+            ) if pd.notna(row.get('Par')) else ""
+
+            # Ensure we handle HCP safely if it's missing or if we are in "Alle Spieler" mode
+            hcp_val = row['HCP'] if self.selected_player != "Alle Spieler" else None
+
+            dataset_source.append([
+                row['Datum'].strftime('%d.%m.%y'), # 0: Date
+                int(row['Brutto']),                # 1: Brutto
+                hcp_val,                           # 2: HCP
+                tooltip_html                       # 3: Tooltip
+            ])
+
+        # Reconfigure series to encode data from dataset
+        # Clear previous data assignment
+        series = []
+
+        # 1. Brutto Bar
+        series.append({
+            "name": "Brutto",
+            "type": "bar",
+            "encode": {"x": 0, "y": 1, "tooltip": 3}, # Use dim 3 for tooltip
+            "yAxisIndex": 1,
+            "itemStyle": {"color": "rgba(84, 245, 66, 0.6)"},
+            "label": {
+                "show": True,
+                "position": "inside",
+                "color": "black",
+                "fontSize": 12,
+                "rotate": 90,
+                "formatter": "{@1}" # Show Brutto value
+            },
+        })
+
+        # 2. HCP Line
+        if self.selected_player != "Alle Spieler":
+            series.append({
+                "name": "HCP",
+                "type": "line",
+                "encode": {"x": 0, "y": 2, "tooltip": 3},
+                "yAxisIndex": 0,
+                "smooth": False,
+                "symbol": "circle",
+                "symbolSize": 6,
+                "itemStyle": {"color": "royalblue"},
+                "lineStyle": {"width": 1.5, "color": "royalblue"},
+            })
+
+        # 3. uPar Scatter
+        # This one is tricky with dataset encode because it's sparse (not all points have uPar).
+        # Easier to keep it as explicit data array to avoid alignment issues if we filter.
+        if upar_data:
+             series.append({
+                "name": "Über Par",
+                "type": "scatter",
+                "yAxisIndex": 1,
+                "symbolSize": 1,
+                "itemStyle": {"opacity": 0},
+                # For scatter, x needs to be the index or category value.
+                # Since x-axis is category (dates), we use the index or the date string.
+                # upar_data previously used [index, value, label].
+                # Let's map index to dates.
+                "data": [
+                    [dates[item[0]], item[1], item[2]] for item in upar_data
+                ],
+                "label": {
+                    "show": True,
+                    "position": "top",
+                    "formatter": "{@2}",
+                    "color": "black",
+                    "fontSize": 10,
+                    "fontWeight": "bold",
+                    "distance": 5
+                },
+                "z": 10,
+                "tooltip": {"show": False}
+             })
+
+        option = {
+            "dataset": {
+                "source": dataset_source
+            },
+            "tooltip": {
+                "trigger": "axis",
+                "axisPointer": {"type": "shadow"},
+                "backgroundColor": "rgba(255, 255, 255, 0.9)",
+                "padding": 10,
+                "textStyle": {"color": "#333"},
+                "extraCssText": "box-shadow: 0 0 3px rgba(0, 0, 0, 0.3);",
+                 "formatter": """function (params) {
+                    var item = params[0];
+                    var data = item.data || item.value;
+                    if (Array.isArray(data) && data.length > 3) {
+                        return data[3];
+                    }
+                    return item.seriesName + ': ' + item.value[1];
+                }"""
+            },
+            "legend": {
+                "data": ["HCP", "Brutto"],
+                "top": 0
+            },
+            "grid": {
+                "left": "3%",
+                "right": "3%",
+                "bottom": "15%",
+                "containLabel": True
+            },
+            "xAxis": {
+                "type": "category",
+                # "data": dates, # Removed, using dataset
+                "axisTick": {"alignWithLabel": True},
+                "axisLine": {"lineStyle": {"color": "#ccc"}},
+                "axisLabel": {"color": "#333"}
+            },
+            "yAxis": [
+                {
+                    "type": "value",
+                    "name": "HCP",
+                    "position": "left",
+                    "axisLine": {"show": True, "lineStyle": {"color": "royalblue"}},
+                    "axisLabel": {"formatter": "{value}"},
+                    "splitLine": {"show": True, "lineStyle": {"type": "dashed"}}
+                },
+                {
+                    "type": "value",
+                    "name": "Brutto",
+                    "position": "right",
+                    "axisLine": {"show": True, "lineStyle": {"color": "green"}},
+                    "axisLabel": {"formatter": "{value}"},
+                    "splitLine": {"show": False}
+                }
+            ],
+            "dataZoom": [
+                {
+                    "type": "slider",
+                    "show": True,
+                    "xAxisIndex": [0],
+                    "start": 0,
+                    "end": 100,
+                    "bottom": 10
+                },
+                {
+                    "type": "inside",
+                    "xAxisIndex": [0],
+                    "start": 0,
+                    "end": 100
+                }
+            ],
+            "series": series
+        }
+
+        # Handle initial zoom logic
         total_bars = len(df)
-        initial_min = max(-0.5, total_bars - 20.5)
-        initial_max = total_bars - 0.5
-        abs_min = -0.5
-        abs_max = total_bars - 0.5
+        if total_bars > 20:
+             start_pct = max(0, (total_bars - 20) / total_bars * 100)
+             option["dataZoom"][0]["start"] = start_pct
+             option["dataZoom"][1]["start"] = start_pct
 
-        fig.update_layout(
-            template='plotly_white',
-            hovermode='closest',
-            dragmode='pan',
-            xaxis=dict(
-                tickvals=df['ContinuousIndex'],
-                ticktext=df['Datum'].dt.strftime('%d.%m.%y'),
-                range=[initial_min, initial_max],
-                # Remove minallowed/maxallowed to prevent "stuck" zoom at edges
-                # minallowed=abs_min,
-                # maxallowed=abs_max,
-                showgrid=True,
-                gridcolor='rgba(0,0,0,0.1)',
-                fixedrange=False,  # Allow panning on X-axis
-                rangeslider=dict(visible=True, thickness=0.05), # Add scrollbar-like navigation
-            ),
-            yaxis=dict(fixedrange=True, title="HCP", side='left'),
-            yaxis2=dict(overlaying='y', side='right', fixedrange=True, title="Brutto", showgrid=False),
-            margin=dict(l=10, r=10, t=40, b=10),
-            legend=dict(orientation="h", y=1.1),
-        )
+        # Add MarkLines (unchanged)
+        if mark_lines:
+             if series:
+                 series[0]["markLine"] = {
+                     "symbol": "none",
+                     "label": {"show": False},
+                     "lineStyle": {"type": "dashed", "color": "red", "opacity": 0.4},
+                     "data": mark_lines
+                 }
 
-        return fig
+        return option
 
 
 # --- UI COMPONENTS ---
@@ -704,12 +878,9 @@ def dashboard():
                 rx.cond(
                     GolfState.filtered_df.empty,
                     rx.text("Keine Daten", color="gray", padding="40px", text_align="center"),
-                    rx.plotly(
-                        data=GolfState.figure,
-                        use_resize_handler=True,
+                    rx_echarts.echarts(
+                        option=GolfState.echarts_option,
                         style={"width": "100%", "height": "100%"},
-                        # Disable scrollZoom for better mobile experience
-                        config={"displayModeBar": False, "scrollZoom": False}
                     )
                 ),
                 width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
