@@ -388,10 +388,7 @@ class GolfState(rx.State):
             "encode": {"x": 0, "y": 1}, # X is Date(0), Y is Brutto(1)
             "yAxisIndex": 1, # Maps to right axis
             "itemStyle": {
-                "color": rx_echarts.js(
-                    # Add a slight gradient for beauty
-                    "new echarts.graphic.LinearGradient(0, 0, 0, 1, [{offset: 0, color: '#88f088'}, {offset: 1, color: '#28b028'}])"
-                ),
+                "color": "#88f088", # Safe solid color instead of JS gradient
                 "borderRadius": [4, 4, 0, 0] # Rounded top corners
             },
             "label": {
@@ -460,8 +457,7 @@ class GolfState(rx.State):
                 # CLIENT-SIDE HTML GENERATION
                 # We build the HTML entirely in JS using the raw dataset array.
                 # This guarantees no "Python code" leaks and prevents JSON parsing crashes.
-                 "formatter": rx_echarts.js("""
-                 function (params) {
+                 "formatter": """function (params) {
                     // Extract data from the first series that triggered the tooltip
                     var data = params[0].data || params[0].value;
                     if (!Array.isArray(data)) return '';
@@ -498,8 +494,7 @@ class GolfState(rx.State):
                     html += '</table></div>';
 
                     return html;
-                }
-                """)
+                }"""
             },
             "legend": {
                 "data": ["HCP", "Brutto"],
@@ -522,8 +517,7 @@ class GolfState(rx.State):
                 "axisLine": {"lineStyle": {"color": "#e0e0e0"}},
                 "axisLabel": {
                     "color": "#666",
-                    "fontSize": 10,
-                    "formatter": rx_echarts.js("function(value) { return value; }") # Keep as is
+                    "fontSize": 10
                 }
             },
             "yAxis": [
