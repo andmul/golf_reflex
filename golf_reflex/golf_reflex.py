@@ -4,8 +4,6 @@ import pandas as pd
 import numpy as np
 import os
 import ast
-import json
-from typing import List, Optional
 
 MODULE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR: str = os.path.join(os.path.dirname(MODULE_DIR), "assets")
@@ -59,7 +57,6 @@ def load_and_prep_data(dataset_name: str = "AK50"):
         true_values = ['true', 'yes', '1', '1.0', 'ja', 't', 'y', 'j']
         df['HCPRelevant'] = df['HCPRelevant'].isin(true_values)
     else:
-        print("ERROR: 'HCPRelevant' column NOT found!")
         df['HCPRelevant'] = False
 
     # --- STATS CALCULATION ---
@@ -67,7 +64,6 @@ def load_and_prep_data(dataset_name: str = "AK50"):
     if 'par' in df.columns and 'score' in df.columns:
         def calc_row_deltas(row):
             try:
-                # Handle par list
                 if isinstance(row['par'], str):
                     p_list = ast.literal_eval(row['par'])
                 elif isinstance(row['par'], (list, np.ndarray)):
@@ -75,7 +71,6 @@ def load_and_prep_data(dataset_name: str = "AK50"):
                 else:
                     p_list = []
 
-                # Handle score list
                 if isinstance(row['score'], str):
                     s_list = ast.literal_eval(row['score'])
                 elif isinstance(row['score'], (list, np.ndarray)):
@@ -123,7 +118,7 @@ def get_sort_key(name):
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "nobi")
 
 
-class GolfStateEc(rx.State):
+class GolfState(rx.State):
     is_authenticated: bool = False
     password_input: str = ""
     auth_error: str = ""
@@ -144,21 +139,17 @@ class GolfStateEc(rx.State):
 
     def _reload_data(self):
         self._data = load_and_prep_data(self.selected_dataset)
-        # Reset filters if needed, or validate them against new data
         if "Spieler_Name" in self._data.columns:
-            # Check if current selected player is valid, else reset
             players = self.player_options
             if self.selected_player not in players:
                  self.selected_player = "Alle Spieler"
         if "Jahr" in self._data.columns:
              years = self.year_options
              if self.selected_year not in years:
-                 # Default to most recent year if available
                  if len(years) > 1:
                      self.selected_year = years[1] # [0] is "Alle Jahre"
                  else:
                      self.selected_year = "Alle Jahre"
-
 
     def set_selected_dataset(self, value: str):
         self.selected_dataset = value
@@ -190,7 +181,6 @@ class GolfStateEc(rx.State):
             self.is_authenticated = True
             self.auth_error = ""
             self.password_input = ""
-            # Ensure data is loaded
             if self._data.empty:
                 self._reload_data()
         else:
@@ -221,55 +211,31 @@ class GolfStateEc(rx.State):
 
     @rx.var
     def period_df(self) -> pd.DataFrame:
-        """
-        Base Data for the selected Period (Player + Year).
-        Independent of Checkboxes (Brutto/Einzel/VGW).
-        Used for the 'Turnier Übersicht' cards.
-        """
         if not self.is_authenticated or self._data.empty: return pd.DataFrame()
-
         df = self._data.copy()
-
         if self.selected_player != "Alle Spieler":
             df = df[df['Spieler_Name'] == self.selected_player]
-
         if self.selected_year != "Alle Jahre":
             df = df[df['Jahr'] == int(self.selected_year)]
-
         return df
 
     @rx.var
     def filtered_df(self) -> pd.DataFrame:
-        """
-        Final Data for Charts & Lists.
-        Applies Checkboxes ON TOP of period_df.
-        """
         df = self.period_df.copy()
         if df.empty: return df
 
-        # 1. Nur Turniere mit Ergebnis
         if self.filter_brutto:
-            # Check for non-zero and non-NaN
             df = df[(df['Brutto'].notna()) & (df['Brutto'] != 0)]
 
-        # 2. Turnierart Filter
         if self.filter_turnierart == "Einzel":
-            # "Einzel" filter: Includes all tournaments where Spielmodus starts with "Einzel".
-            # This excludes team formats like Scramble, Vierer, etc.
             df = df[df['Spielmodus'].str.startswith('Einzel', na=False)]
         elif self.filter_turnierart == "Vorgabewirksam":
-             # "Vorgabewirksam" filter: A subset of Einzel.
-             # Includes only tournaments explicitly marked as HCPRelevant (VGW) in the database.
              df = df[df['HCPRelevant'] == True]
 
         return df.sort_values('Datum').reset_index(drop=True)
 
     @rx.var
     def tournament_counts(self) -> dict:
-        """
-        Counts based on period_df (ignoring checkboxes)
-        to show the full potential of the selection.
-        """
         df = self.period_df
         if df.empty:
             return {"total": 0, "with_result": 0, "single": 0, "vgw": 0}
@@ -289,10 +255,8 @@ class GolfStateEc(rx.State):
 
     @rx.var
     def scoring_stats(self) -> dict:
-        # Scoring stats depend on the filtered view (what you see in the chart)
         if self.filtered_df.empty or 'cnt_birdie' not in self.filtered_df.columns:
             return {"birdie": 0, "eagle": 0, "albatross": 0, "ace": 0}
-
         df = self.filtered_df
         return {
             "birdie": int(df['cnt_birdie'].sum()),
@@ -320,7 +284,6 @@ class GolfStateEc(rx.State):
         if df.empty: return []
 
         recent = df.tail(10).iloc[::-1].copy()
-
         rounds = []
         for _, r in recent.iterrows():
             upar_val = ""
@@ -353,26 +316,32 @@ class GolfStateEc(rx.State):
 
     @rx.var
     def echarts_option(self) -> dict:
+        """
+        Generates the ECharts configuration.
+        Optimized to pass raw data via `dataset` and use pure JS formatters
+        to avoid frontend serialization/dispatch errors and ensure performance.
+        """
         if self.filtered_df.empty:
             return {}
 
         df = self.filtered_df.copy()
+        # Create a continuous index for the x-axis to evenly space bars despite date gaps
         df['ContinuousIndex'] = range(len(df))
 
+        # 1. Prepare Dates for the X-Axis Category
         dates = df['Datum'].dt.strftime('%d.%m.%y').tolist()
-        brutto_data = df['Brutto'].astype(int).tolist()
-        hcp_data = df['HCP'].tolist()
 
-        # Determine uPar data for labels
+        # 2. Prepare Data for uPar Scatter Labels
+        # We use a separate data array mapped to the continuous index so we can precisely
+        # position the labels at the top of the bars.
         upar_data = []
-        for _, row in df.iterrows():
+        for i, row in df.iterrows():
             if not pd.isna(row.get('uPar')):
                 val = int(row['uPar'])
-                upar_data.append({"value": row['Brutto'], "symbol": "none", "label": {"show": True, "formatter": f"{val:+}", "position": "top", "color": "black", "fontSize": 9, "fontWeight": "bold"}})
-            else:
-                upar_data.append(None) # Or appropriate empty value
+                # Format: [X-Index (integer), Y-Value (Brutto), Label Text]
+                upar_data.append([row['ContinuousIndex'], row['Brutto'], f"{val:+}"])
 
-        # Winter breaks lines
+        # 3. Calculate Winter Breaks (Gaps > 50 days)
         mark_lines = []
         if len(df) > 1:
             date_diffs = df['Datum'].diff().dt.days
@@ -380,172 +349,200 @@ class GolfStateEc(rx.State):
             for idx in gap_indices:
                 if idx > 0:
                     try:
-                         # Calculate position similar to Plotly logic. ECharts xAxis is categorical by default (index based)
-                         # so we can use the index directly.
-                         # Since ContinuousIndex is 0..N-1, we can find the split point.
-                         # Plotly was: (pos_current + pos_prev) / 2
-                         # Here: we need the index in the current filtered df
-
-                         # Get integer location in the current df
                          iloc_idx = df.index.get_loc(idx)
-                         # The gap is before this index, so between iloc_idx-1 and iloc_idx
+                         # Place the line exactly between the two bars
                          mark_pos = iloc_idx - 0.5
                          mark_lines.append({"xAxis": mark_pos})
                     except:
                         pass
 
+        # 4. Construct the Main Dataset Source
+        # We pass RAW data here. No HTML strings. This prevents serialization crashes.
+        dataset_source = []
+        for i, row in df.iterrows():
+            # If "Alle Spieler" is selected, don't plot the HCP line. We pass None.
+            hcp_val = row['HCP'] if self.selected_player != "Alle Spieler" else None
+
+            def safe_str(val): return str(val) if pd.notna(val) else "-"
+            def safe_int(val): return int(val) if pd.notna(val) else "-"
+
+            dataset_source.append([
+                row['Datum'].strftime('%d.%m.%y'), # 0: Date
+                safe_int(row['Brutto']),           # 1: Brutto
+                hcp_val,                           # 2: HCP
+                safe_str(row['Club']),             # 3: Club
+                safe_str(row['Turnier']),          # 4: Turnier
+                safe_str(row['Spieler_Name']),     # 5: Player
+                safe_str(row.get('Spielmodus')),   # 6: Mode
+                safe_int(row.get('Par')),          # 7: Par
+                safe_int(row.get('uPar')),         # 8: uPar (raw)
+                safe_int(row.get('cr')),           # 9: CR
+            ])
+
         series = []
 
-        # Brutto Bar Series
+        # Series A: Brutto Bars (Mapped to Dataset)
         series.append({
             "name": "Brutto",
             "type": "bar",
-            "data": brutto_data,
-            "yAxisIndex": 1,
-            "itemStyle": {"color": "rgba(84, 245, 66, 0.6)"},
+            "encode": {"x": 0, "y": 1}, # X is Date(0), Y is Brutto(1)
+            "yAxisIndex": 1, # Maps to right axis
+            "itemStyle": {
+                "color": rx_echarts.js(
+                    # Add a slight gradient for beauty
+                    "new echarts.graphic.LinearGradient(0, 0, 0, 1, [{offset: 0, color: '#88f088'}, {offset: 1, color: '#28b028'}])"
+                ),
+                "borderRadius": [4, 4, 0, 0] # Rounded top corners
+            },
             "label": {
                 "show": True,
                 "position": "inside",
                 "color": "black",
-                "fontSize": 14
+                # Optimization: 10px is readable, bold helps, rotation prevents overlap on dense charts
+                "fontSize": 10,
+                "fontWeight": "bold",
+                "rotate": 90,
+                "formatter": "{@1}" # Renders the Brutto value from dimension 1
             },
-            "tooltip": {"show": False} # We use a shared tooltip
         })
 
-        # HCP Line Series
+        # Series B: HCP Line (Mapped to Dataset, Conditional)
         if self.selected_player != "Alle Spieler":
             series.append({
                 "name": "HCP",
                 "type": "line",
-                "data": hcp_data,
-                "yAxisIndex": 0,
-                "smooth": False,
+                "encode": {"x": 0, "y": 2}, # X is Date(0), Y is HCP(2)
+                "yAxisIndex": 0, # Maps to left axis
+                "smooth": True, # Smoother lines are visually appealing
                 "symbol": "circle",
                 "symbolSize": 6,
-                "itemStyle": {"color": "royalblue"},
-                "lineStyle": {"width": 1.5, "color": "royalblue"},
-                "tooltip": {"show": False}
+                "itemStyle": {"color": "#1f77b4", "borderColor": "#fff", "borderWidth": 2},
+                "lineStyle": {"width": 2, "color": "#1f77b4"},
             })
 
-        # uPar Scatter/Label Series (hacky way to put labels on top if we want separate series,
-        # but ECharts supports rich labels. Alternatively, use a scatter series on top of bars)
-        # The Plotly code used a separate scatter trace for text.
-        # In ECharts, we can try adding a second scatter series with transparency just for labels.
-
-        # Filter valid uPar points
-        upar_points = []
-        for i, val in enumerate(upar_data):
-            if val is not None:
-                upar_points.append([i, val["value"], val["label"]["formatter"]])
-
-        if upar_points:
+        # Series C: uPar Labels (Scatter Overlay)
+        if upar_data:
              series.append({
                 "name": "Über Par",
                 "type": "scatter",
-                "data": [[p[0], p[1]] for p in upar_points],
                 "yAxisIndex": 1,
-                "symbolSize": 1, # Tiny symbol
-                "itemStyle": {"opacity": 0}, # Invisible
+                "symbolSize": 1, # Invisible point
+                "itemStyle": {"opacity": 0},
+                "data": upar_data, # Directly provided [x_index, y_value, label_text]
                 "label": {
                     "show": True,
                     "position": "top",
-                    "formatter": "{b}", # We need to pass the label text.
-                    # Actually better to use 'data' as objects with label prop?
-                    # Let's reconstruct data
+                    "formatter": "{@2}", # Reads the 3rd element (index 2) which is our "+val" string
+                    "color": "#e53935", # Distinct red color for uPar
+                    "fontSize": 10,
+                    "fontWeight": "bold",
+                    "distance": 3 # Closer to the bar
                 },
-                 # Re-doing data construction for this series
-                "data": [
-                    {
-                        "value": [p[0], p[1]],
-                        "label": {
-                            "show": True,
-                            "formatter": p[2],
-                            "position": "top",
-                            "color": "black",
-                            "fontSize": 10,
-                            "fontWeight": "bold",
-                            "distance": 5
-                        }
-                    } for p in upar_points
-                ],
-                "z": 10,
-                "tooltip": {"show": False}
+                "z": 10, # Ensure it renders above bars
+                "tooltip": {"show": False} # Disable tooltip for these text anchors
              })
 
-        # Prepare tooltip data mapping
-        # We need to access row data in the tooltip formatter.
-        # ECharts formatter callbacks run in JS. passing massive data might be tricky.
-        # Standard approach: Put all info into 'data' or mapped arrays and access via index.
-        # However, Reflex runs Python. We can construct a list of tooltip strings and access them by index.
-
-        tooltip_texts = df.apply(lambda r: (
-            f"<div style='text-align:left;'>"
-            f"<b>{r['Datum'].strftime('%d.%m.%y')}</b><br>"
-            f"{r['Turnier']}<br>"
-            f"{r['Club']}<br>"
-            f"<b>Spieler:</b> {r['Spieler_Name']}<br>"
-            f"<b>Spielmodus:</b> {r.get('Spielmodus', 'N/A')}<br>"
-            f"<b>Brutto:</b> {int(r['Brutto'])}<br>"
-            f"<b>Par:</b> {f'{int(r.get('Par'))} | {int(r.get('uPar', 0)):+,d}' if not pd.isna(r.get('uPar', None)) else r.get('Par')}<br>"
-            f"<b>CR:</b> {int(r['cr']) if pd.notna(r.get('cr')) else 'N/A'}<br>"
-            f"</div>"
-        ) if pd.notna(r.get('Par')) else "", axis=1).tolist()
-
-        # Safe handling if Par is nan, just in case, though the above logic tries to handle it.
-        # Better: Ensure all required fields have defaults before generating string.
-
-        # Serialize to JSON string to be safely embedded in the JS function
-        tooltip_json = json.dumps(tooltip_texts)
-
         option = {
+            "backgroundColor": "#ffffff",
+            "dataset": {
+                "source": dataset_source
+            },
             "tooltip": {
                 "trigger": "axis",
                 "axisPointer": {"type": "shadow"},
-                "backgroundColor": "rgba(255, 255, 255, 0.9)",
-                "padding": 10,
-                "textStyle": {"color": "#333"},
-                "extraCssText": "box-shadow: 0 0 3px rgba(0, 0, 0, 0.3);",
-                 # JS function string to render custom html.
-                 # params[0].dataIndex gives the index.
-                 # We need to inject the tooltip_texts array into the JS context.
-                "formatter": f"""function (params) {{
-                    var texts = {tooltip_json};
-                    var index = params[0].dataIndex;
-                    return texts[index];
-                }}"""
+                "backgroundColor": "rgba(255, 255, 255, 0.95)",
+                "borderColor": "#e0e0e0",
+                "borderWidth": 1,
+                "padding": 12,
+                "textStyle": {"color": "#333", "fontSize": 12},
+                "extraCssText": "box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); border-radius: 8px;",
+
+                # CLIENT-SIDE HTML GENERATION
+                # We build the HTML entirely in JS using the raw dataset array.
+                # This guarantees no "Python code" leaks and prevents JSON parsing crashes.
+                 "formatter": rx_echarts.js("""
+                 function (params) {
+                    // Extract data from the first series that triggered the tooltip
+                    var data = params[0].data || params[0].value;
+                    if (!Array.isArray(data)) return '';
+
+                    // Map to our dataset structure: [Date, Brutto, HCP, Club, Turnier, Player, Mode, Par, uPar, CR]
+                    var date = data[0];
+                    var brutto = data[1];
+                    var club = data[3];
+                    var turnier = data[4];
+                    var player = data[5];
+                    var mode = data[6];
+                    var par = data[7];
+                    var uparRaw = data[8];
+                    var cr = data[9];
+
+                    // Format uPar string on the client
+                    var uparFmt = uparRaw;
+                    if (uparRaw !== "-" && typeof uparRaw === "number") {
+                        uparFmt = (uparRaw > 0 ? "+" : "") + uparRaw;
+                    }
+
+                    // Build elegant HTML table for tooltip
+                    var html = '<div style="min-width: 180px;">';
+                    html += '<div style="font-weight:bold; font-size:14px; border-bottom:1px solid #eee; padding-bottom:5px; margin-bottom:5px;">' + date + '</div>';
+                    html += '<div style="font-size:11px; color:#666; margin-bottom:2px;">' + turnier + '</div>';
+                    html += '<div style="font-size:11px; color:#666; margin-bottom:8px;">' + club + '</div>';
+
+                    html += '<table style="width:100%; font-size:12px; line-height: 1.4;">';
+                    html += '<tr><td style="color:#888;">Spieler</td><td style="text-align:right; font-weight:500;">' + player + '</td></tr>';
+                    html += '<tr><td style="color:#888;">Modus</td><td style="text-align:right;">' + mode + '</td></tr>';
+                    html += '<tr><td style="color:#888;">Brutto</td><td style="text-align:right; font-weight:bold; color:#28b028;">' + brutto + '</td></tr>';
+                    html += '<tr><td style="color:#888;">Par</td><td style="text-align:right;">' + par + ' <span style="color:#e53935; font-size:10px;">(' + uparFmt + ')</span></td></tr>';
+                    html += '<tr><td style="color:#888;">CR</td><td style="text-align:right;">' + cr + '</td></tr>';
+                    html += '</table></div>';
+
+                    return html;
+                }
+                """)
             },
             "legend": {
                 "data": ["HCP", "Brutto"],
-                "top": 0
+                "top": 0,
+                "icon": "circle"
             },
             "grid": {
                 "left": "3%",
                 "right": "3%",
-                "bottom": "15%", # Space for dataZoom
+                "bottom": "18%", # Extra space for dataZoom and labels
+                "top": "12%",
                 "containLabel": True
             },
             "xAxis": {
                 "type": "category",
+                # Use dates list directly for xAxis data so ECharts knows the exact categories
+                # This ensures the scatter plot aligns perfectly with the bars
                 "data": dates,
                 "axisTick": {"alignWithLabel": True},
-                "axisLine": {"lineStyle": {"color": "#ccc"}},
-                "axisLabel": {"color": "#333"}
+                "axisLine": {"lineStyle": {"color": "#e0e0e0"}},
+                "axisLabel": {
+                    "color": "#666",
+                    "fontSize": 10,
+                    "formatter": rx_echarts.js("function(value) { return value; }") # Keep as is
+                }
             },
             "yAxis": [
                 {
                     "type": "value",
                     "name": "HCP",
                     "position": "left",
-                    "axisLine": {"show": True, "lineStyle": {"color": "royalblue"}},
-                    "axisLabel": {"formatter": "{value}"},
-                    "splitLine": {"show": True, "lineStyle": {"type": "dashed"}}
+                    "nameTextStyle": {"color": "#1f77b4", "fontWeight": "bold"},
+                    "axisLine": {"show": True, "lineStyle": {"color": "#1f77b4"}},
+                    "axisLabel": {"color": "#1f77b4"},
+                    "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#f0f0f0"}}
                 },
                 {
                     "type": "value",
                     "name": "Brutto",
                     "position": "right",
-                    "axisLine": {"show": True, "lineStyle": {"color": "green"}},
-                    "axisLabel": {"formatter": "{value}"},
+                    "nameTextStyle": {"color": "#28b028", "fontWeight": "bold"},
+                    "axisLine": {"show": True, "lineStyle": {"color": "#28b028"}},
+                    "axisLabel": {"color": "#28b028"},
                     "splitLine": {"show": False}
                 }
             ],
@@ -554,9 +551,13 @@ class GolfStateEc(rx.State):
                     "type": "slider",
                     "show": True,
                     "xAxisIndex": [0],
-                    "start": 0, # Should calculate based on last 20 items or similar logic
+                    "start": 0,
                     "end": 100,
-                    "bottom": 10
+                    "bottom": 10,
+                    "borderColor": "transparent",
+                    "backgroundColor": "#f9f9f9",
+                    "fillerColor": "rgba(40, 176, 40, 0.2)",
+                    "handleStyle": {"color": "#28b028"}
                 },
                 {
                     "type": "inside",
@@ -568,22 +569,20 @@ class GolfStateEc(rx.State):
             "series": series
         }
 
-        # Handle initial zoom logic (show last 20 items roughly)
+        # Handle initial zoom logic to show roughly the last 20 rounds
         total_bars = len(df)
         if total_bars > 20:
-             start_pct = max(0, (total_bars - 20) / total_bars * 100)
+             start_pct = max(0, ((total_bars - 20) / total_bars) * 100)
              option["dataZoom"][0]["start"] = start_pct
              option["dataZoom"][1]["start"] = start_pct
 
         # Add MarkLines for Winter Breaks
         if mark_lines:
-             # Add to the Brutto series (index 0 if HCP hidden, or index 1)
-             # Better to add to the first series present.
              if series:
                  series[0]["markLine"] = {
                      "symbol": "none",
                      "label": {"show": False},
-                     "lineStyle": {"type": "dashed", "color": "red", "opacity": 0.4},
+                     "lineStyle": {"type": "solid", "color": "#ff9800", "width": 1.5, "opacity": 0.6},
                      "data": mark_lines
                  }
 
@@ -600,7 +599,7 @@ def round_card(r: dict):
                     rx.text(r["date"], font_weight="bold", font_size="0.8em"),
                     rx.text(r["club"], font_size="0.7em", color="gray"),
                     rx.cond(
-                        GolfStateEc.selected_player == "Alle Spieler",
+                        GolfState.selected_player == "Alle Spieler",
                         rx.text(r["player"], font_size="0.7em", color="#2c5282", font_weight="bold"),
                     ),
                     align_items="start", spacing="0"
@@ -612,7 +611,7 @@ def round_card(r: dict):
                 rx.vstack(
                     rx.hstack(
                         rx.text(r["hcp"], font_size="0.7em", color="royalblue"),
-                        rx.text(r["upar"], font_size="0.75em", font_weight="bold", color="blue"),
+                        rx.text(r["upar"], font_size="0.75em", font_weight="bold", color="red"),
                         spacing="2"
                     ),
                     rx.text(r["brutto"], font_weight="bold", color="green", font_size="0.75em"),
@@ -648,7 +647,7 @@ def player_summary_table():
                         rx.table.column_header_cell("Akt. HCP"),
                     )
                 ),
-                rx.table.body(rx.foreach(GolfStateEc.player_summary_list, player_summary_row)),
+                rx.table.body(rx.foreach(GolfState.player_summary_list, player_summary_row)),
                 width="100%", variant="surface"
             ),
         ),
@@ -669,20 +668,20 @@ def scoring_stats_card():
     return rx.box(
         rx.vstack(
             rx.heading("Scoring Statistiken", size="3"),
-            rx.text(GolfStateEc.stats_title, font_size="0.8em", color="gray"),
+            rx.text(GolfState.stats_title, font_size="0.8em", color="gray"),
             rx.hstack(
-                stat_box("Birdies", GolfStateEc.scoring_stats["birdie"], "#FFD700", "rgba(255, 215, 0, 0.1)"),
-                stat_box("Eagles", GolfStateEc.scoring_stats["eagle"], "#FF8C00", "rgba(255, 140, 0, 0.1)"),
-                stat_box("Albatros", GolfStateEc.scoring_stats["albatross"], "#8B00FF", "rgba(139, 0, 255, 0.1)"),
-                stat_box("Ace", GolfStateEc.scoring_stats["ace"], "#FF0000", "rgba(255, 0, 0, 0.1)"),
+                stat_box("Birdies", GolfState.scoring_stats["birdie"], "#FFD700", "rgba(255, 215, 0, 0.1)"),
+                stat_box("Eagles", GolfState.scoring_stats["eagle"], "#FF8C00", "rgba(255, 140, 0, 0.1)"),
+                stat_box("Albatros", GolfState.scoring_stats["albatross"], "#8B00FF", "rgba(139, 0, 255, 0.1)"),
+                stat_box("Ace", GolfState.scoring_stats["ace"], "#FF0000", "rgba(255, 0, 0, 0.1)"),
                 width="100%", spacing="2", justify="between"
             ),
             rx.hstack(
                 rx.text("Gesamt: ", font_size="0.9em", color="gray"),
-                rx.text(GolfStateEc.scoring_total, font_size="0.9em", font_weight="bold"),
+                rx.text(GolfState.scoring_total, font_size="0.9em", font_weight="bold"),
                 rx.spacer(),
                 rx.text("Ø pro Runde: ", font_size="0.9em", color="gray"),
-                rx.text(GolfStateEc.scoring_average, font_size="0.9em", font_weight="bold"),
+                rx.text(GolfState.scoring_average, font_size="0.9em", font_weight="bold"),
                 width="100%", justify="between", padding_top="0.5em"
             ),
             width="100%", padding="1em", background_color="#fcfcfc", border_radius="lg", border="1px solid #e0e0e0",
@@ -699,26 +698,26 @@ def tournament_summary_card():
             rx.grid(
                 rx.vstack(
                     rx.text("Gesamt", font_size="0.8em", color="gray"),
-                    rx.text(GolfStateEc.tournament_counts["total"], font_size="1.5em", font_weight="bold"),
+                    rx.text(GolfState.tournament_counts["total"], font_size="1.5em", font_weight="bold"),
                     align="center", spacing="0", padding="0.5em", border_radius="md", background_color="#f0f0f0",
                     width="100%"
                 ),
                 rx.vstack(
                     rx.text("Mit Ergebnis", font_size="0.8em", color="gray"),
-                    rx.text(GolfStateEc.tournament_counts["with_result"], font_size="1.5em", font_weight="bold",
+                    rx.text(GolfState.tournament_counts["with_result"], font_size="1.5em", font_weight="bold",
                             color="green"),
                     align="center", spacing="0", padding="0.5em", border_radius="md",
                     background_color="rgba(0, 255, 0, 0.05)", width="100%"
                 ),
                 rx.vstack(
                     rx.text("Einzel", font_size="0.8em", color="gray"),
-                    rx.text(GolfStateEc.tournament_counts["single"], font_size="1.5em", font_weight="bold", color="blue"),
+                    rx.text(GolfState.tournament_counts["single"], font_size="1.5em", font_weight="bold", color="blue"),
                     align="center", spacing="0", padding="0.5em", border_radius="md",
                     background_color="rgba(0, 0, 255, 0.05)", width="100%"
                 ),
                 rx.vstack(
                     rx.text("Vorgabewirksam", font_size="0.8em", color="gray"),
-                    rx.text(GolfStateEc.tournament_counts["vgw"], font_size="1.5em", font_weight="bold", color="purple"),
+                    rx.text(GolfState.tournament_counts["vgw"], font_size="1.5em", font_weight="bold", color="purple"),
                     align="center", spacing="0", padding="0.5em", border_radius="md",
                     background_color="rgba(128, 0, 128, 0.05)", width="100%"
                 ),
@@ -737,21 +736,21 @@ def login_form():
                 rx.heading("Golf Performance Dashboard", size="6", padding_bottom="1em"),
                 rx.text("Bitte Passwort eingeben", color="gray", padding_bottom="0.5em"),
                 rx.input(
-                    value=GolfStateEc.password_input,
-                    on_change=GolfStateEc.set_password_input,
-                    on_key_down=GolfStateEc.handle_key_down,
+                    value=GolfState.password_input,
+                    on_change=GolfState.set_password_input,
+                    on_key_down=GolfState.handle_key_down,
                     placeholder="Passwort",
                     type="password",
                     width="250px",
                     aria_label="Passwort Eingabefeld",
                 ),
                 rx.cond(
-                    GolfStateEc.auth_error,
-                    rx.text(GolfStateEc.auth_error, color="red", font_size="0.9em"),
+                    GolfState.auth_error,
+                    rx.text(GolfState.auth_error, color="red", font_size="0.9em"),
                 ),
                 rx.button(
                     "Anmelden",
-                    on_click=GolfStateEc.check_password,
+                    on_click=GolfState.check_password,
                     width="250px",
                     margin_top="1em",
                 ),
@@ -771,7 +770,7 @@ def dashboard():
             rx.hstack(
                 rx.heading("🏌️ Golf Performance", size="6"),
                 rx.spacer(),
-                rx.button("Abmelden", on_click=GolfStateEc.logout, size="2", variant="soft"),
+                rx.button("Abmelden", on_click=GolfState.logout, size="2", variant="soft"),
                 width="100%", padding_y="0.4em",
             ),
 
@@ -779,9 +778,9 @@ def dashboard():
             rx.hstack(
                 rx.text("Datensatz:", font_size="0.9em", font_weight="bold"),
                 rx.select(
-                    GolfStateEc.available_datasets,
-                    value=GolfStateEc.selected_dataset,
-                    on_change=GolfStateEc.set_selected_dataset,
+                    GolfState.available_datasets,
+                    value=GolfState.selected_dataset,
+                    on_change=GolfState.set_selected_dataset,
                     width="100%", max_width="400px",
                     custom_attrs={"aria-label": "Datensatz Auswahl"}
                 ),
@@ -791,15 +790,15 @@ def dashboard():
             rx.vstack(
                 rx.hstack(
                     rx.text("Spieler:", font_size="0.9em", font_weight="bold", width="80px"),
-                    rx.select(GolfStateEc.player_options, value=GolfStateEc.selected_player,
-                              on_change=GolfStateEc.set_selected_player, width="100%", max_width="400px",
+                    rx.select(GolfState.player_options, value=GolfState.selected_player,
+                              on_change=GolfState.set_selected_player, width="100%", max_width="400px",
                               custom_attrs={"aria-label": "Spieler Auswahl"}),
                     width="100%",
                 ),
                 rx.hstack(
                     rx.text("Jahr:", font_size="0.9em", font_weight="bold", width="80px"),
-                    rx.select(GolfStateEc.year_options, value=GolfStateEc.selected_year,
-                              on_change=GolfStateEc.set_selected_year, width="100%", max_width="400px",
+                    rx.select(GolfState.year_options, value=GolfState.selected_year,
+                              on_change=GolfState.set_selected_year, width="100%", max_width="400px",
                               custom_attrs={"aria-label": "Jahr Auswahl"}),
                     width="100%",
                 ),
@@ -812,29 +811,37 @@ def dashboard():
                     rx.text("Turnierart:", font_size="0.9em", font_weight="bold"),
                     rx.select(
                         ["Alle", "Einzel", "Vorgabewirksam"],
-                        value=GolfStateEc.filter_turnierart,
-                        on_change=GolfStateEc.set_filter_turnierart,
+                        value=GolfState.filter_turnierart,
+                        on_change=GolfState.set_filter_turnierart,
                         width="180px",
                         custom_attrs={"aria-label": "Turnierart Auswahl"}
                     ),
                     align="center", spacing="2"
                 ),
-                rx.hstack(rx.checkbox(checked=GolfStateEc.filter_brutto, on_change=GolfStateEc.toggle_brutto),
+                rx.hstack(rx.checkbox(checked=GolfState.filter_brutto, on_change=GolfState.toggle_brutto),
                           rx.text("nur Turniere mit Ergebnis", font_size="0.9em"), align="center", spacing="1"),
                 justify="center", width="100%", spacing="4", padding_bottom="1em", wrap="wrap"
             ),
 
             rx.box(
                 rx.cond(
-                    GolfStateEc.filtered_df.empty,
-                    rx.text("Keine Daten", color="gray", padding="40px", text_align="center"),
+                    GolfState.filtered_df.empty,
+                    rx.center(
+                        rx.vstack(
+                            rx.icon(tag="info", size=40, color="gray"),
+                            rx.text("Keine Daten für diese Auswahl gefunden.", color="gray", font_weight="bold"),
+                            rx.text("Bitte ändern Sie die Filterkriterien.", color="gray", font_size="0.9em"),
+                            align="center", spacing="2"
+                        ),
+                        padding="40px", width="100%", height="100%"
+                    ),
                     rx_echarts.echarts(
-                        option=GolfStateEc.echarts_option,
+                        option=GolfState.echarts_option,
                         style={"width": "100%", "height": "100%"},
                     )
                 ),
-                width="100%", min_height="450px", height="55vh", border_radius="md", border="1px solid #e0e0e0",
-                background_color="white"
+                width="100%", min_height="450px", height="60vh", border_radius="lg", border="1px solid #e0e0e0",
+                background_color="white", box_shadow="sm", overflow="hidden"
             ),
 
             scoring_stats_card(),
@@ -842,26 +849,26 @@ def dashboard():
 
             rx.vstack(
                 rx.heading("Letzte 10 Runden", size="3"),
-                rx.foreach(GolfStateEc.last_five_rounds, round_card),
+                rx.foreach(GolfState.last_five_rounds, round_card),
                 width="100%", background_color="#fcfcfc", padding="1.2em", border_radius="lg",
                 border="1px solid #e0e0e0", box_shadow="sm"
             ),
 
             # --- CONDITIONAL TABLE ---
             rx.cond(
-                GolfStateEc.selected_player == "Alle Spieler",
+                GolfState.selected_player == "Alle Spieler",
                 player_summary_table(),
             ),
 
-            width="100%", spacing="3",
+            width="100%", spacing="3", padding_bottom="3em"
         ),
-        padding="1em", max_width="800px", margin="0 auto",
+        padding="1em", max_width="900px", margin="0 auto",
     )
 
 
 def index():
-    return rx.cond(GolfStateEc.is_authenticated, dashboard(), login_form())
+    return rx.cond(GolfState.is_authenticated, dashboard(), login_form())
 
 
 app = rx.App()
-app.add_page(index, on_load=GolfStateEc.on_load)
+app.add_page(index, on_load=GolfState.on_load)
