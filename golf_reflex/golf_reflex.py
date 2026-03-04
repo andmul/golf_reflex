@@ -451,7 +451,7 @@ class GolfState(rx.State):
         if df.empty:
             return {}
 
-        cutoff = df['Datum'].max() - pd.DateOffset(months=12)
+        cutoff = df['Datum'].max() - pd.DateOffset(months=24)
         df_filtered = df[df['Datum'] >= cutoff]
 
         if len(df_filtered) < 10:
@@ -732,8 +732,8 @@ class GolfState(rx.State):
             if valid_hcp:
                 min_hcp = min(valid_hcp)
                 max_hcp = max(valid_hcp)
-                yAxis0["min"] = min_hcp - 2
-                yAxis0["max"] = max_hcp + 2
+                yAxis0["min"] = int(np.floor(min_hcp))
+                yAxis0["max"] = int(np.ceil(max_hcp))
 
         return {
             "tooltip": {
@@ -974,7 +974,7 @@ def single_player_histogram():
     return rx.box(
         rx.vstack(
             rx.hstack(
-                rx.heading("Brutto Histogramm letzte 12 Monate", size="3"),
+                rx.heading("Brutto Histogramm letzte 24 Monate", size="3"),
                 rx.text("Einzel", font_size="0.7em", color="#888", padding_top="2px"),
                 align="end",
                 spacing="2",
