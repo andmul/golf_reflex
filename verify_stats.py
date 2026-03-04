@@ -19,6 +19,10 @@ class MockGolfState:
 # Let's mock app.add_page to do nothing
 mock_rx.App.return_value.add_page = MagicMock()
 
+# Mock Component.create for reflex_echarts
+mock_rx.Component = MagicMock
+mock_rx.Component.create = MagicMock()
+
 from golf_reflex.golf_reflex import load_and_prep_data
 
 print("Loading data...")

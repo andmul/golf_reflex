@@ -432,6 +432,104 @@ class GolfState(rx.State):
         return rows
 
     # ------------------------------------------------------------------
+    # Histogram Data Property
+    # ------------------------------------------------------------------
+    @rx.var
+    def single_player_histogram_data(self) -> dict:
+        if self.selected_player == "Alle Spieler":
+            return {}
+
+        df = self._data.copy()
+        if df.empty:
+            return {}
+
+        df = df[df['Spieler_Name'] == self.selected_player]
+        df = df[(df['Brutto'].notna()) & (df['Brutto'] != 0)]
+        df = df[~df['Spielmodus'].str.contains('Scramble', na=False)]
+        df = df[~df['Spielmodus'].str.contains('Vierer', na=False)]
+
+        if df.empty:
+            return {}
+
+        cutoff = df['Datum'].max() - pd.DateOffset(months=12)
+        df_filtered = df[df['Datum'] >= cutoff]
+
+        if len(df_filtered) < 10:
+            df_filtered = df.tail(10)
+
+        if df_filtered.empty:
+            return {}
+
+        brutto_values = df_filtered['Brutto'].dropna().astype(int).tolist()
+
+        if not brutto_values:
+            return {}
+
+        min_val = min(brutto_values)
+        max_val = max(brutto_values)
+
+        bins = list(range(min_val, max_val + 2))
+        counts = [0] * (len(bins) - 1)
+
+        for val in brutto_values:
+            idx = val - min_val
+            if 0 <= idx < len(counts):
+                counts[idx] += 1
+
+        categories = [str(b) for b in bins[:-1]]
+
+        von_date = df_filtered['Datum'].min().strftime('%d.%m.%y')
+        bis_date = df_filtered['Datum'].max().strftime('%d.%m.%y')
+        median_val = pd.Series(brutto_values).median()
+
+        return {
+            "von_bis": f"Von: {von_date} bis: {bis_date}",
+            "median": f"Median: {median_val:.1f}",
+            "echarts_option": {
+                "tooltip": {
+                    "trigger": "axis",
+                    "axisPointer": {
+                        "type": "shadow"
+                    }
+                },
+                "grid": {
+                    "left": "3%",
+                    "right": "4%",
+                    "bottom": "3%",
+                    "top": "15%",
+                    "containLabel": True
+                },
+                "xAxis": {
+                    "type": "category",
+                    "data": categories,
+                    "axisLabel": {
+                        "color": "#333",
+                        "fontSize": 12
+                    }
+                },
+                "yAxis": {
+                    "type": "value",
+                    "name": "Anzahl",
+                    "minInterval": 1
+                },
+                "series": [
+                    {
+                        "name": "Brutto",
+                        "type": "bar",
+                        "data": counts,
+                        "itemStyle": {"color": "rgba(84, 245, 66, 0.8)"},
+                        "label": {
+                            "show": True,
+                            "position": "top",
+                            "color": "black",
+                            "fontSize": 12
+                        }
+                    }
+                ]
+            }
+        }
+
+    # ------------------------------------------------------------------
     # ECharts option
     # ------------------------------------------------------------------
     @rx.var
@@ -612,6 +710,31 @@ class GolfState(rx.State):
         # ------------------------------------------------------------------
         # Final option dict
         # ------------------------------------------------------------------
+
+        yAxis0 = {
+            "type": "value",
+            "name": "HCP" if self.selected_player != "Alle Spieler" else "",
+            "position": "left",
+            "axisLine": {
+                "show": self.selected_player != "Alle Spieler",
+                "lineStyle": {"color": "royalblue"},
+            },
+            "axisLabel": {"show": self.selected_player != "Alle Spieler"},
+            "axisTick": {"show": self.selected_player != "Alle Spieler"},
+            "splitLine": {
+                "show": self.selected_player != "Alle Spieler",
+                "lineStyle": {"type": "dashed"},
+            },
+        }
+
+        if single_player:
+            valid_hcp = [h for h in hcp_data if pd.notna(h)]
+            if valid_hcp:
+                min_hcp = min(valid_hcp)
+                max_hcp = max(valid_hcp)
+                yAxis0["min"] = min_hcp - 2
+                yAxis0["max"] = max_hcp + 2
+
         return {
             "tooltip": {
                 "trigger": "item",
@@ -644,21 +767,7 @@ class GolfState(rx.State):
                 "axisLabel": {"color": "#333", "rotate": 45, "fontSize": 10},
             },
             "yAxis": [
-                {
-                    "type": "value",
-                    "name": "HCP" if self.selected_player != "Alle Spieler" else "",
-                    "position": "left",
-                    "axisLine": {
-                        "show": self.selected_player != "Alle Spieler",
-                        "lineStyle": {"color": "royalblue"},
-                    },
-                    "axisLabel": {"show": self.selected_player != "Alle Spieler"},
-                    "axisTick": {"show": self.selected_player != "Alle Spieler"},
-                    "splitLine": {
-                        "show": self.selected_player != "Alle Spieler",
-                        "lineStyle": {"type": "dashed"},
-                    },
-                },
+                yAxis0,
                 {
                     "type": "value",
                     "name": "Brutto",
@@ -851,6 +960,49 @@ def player_summary_table():
                 width="100%",
                 variant="surface",
             ),
+        ),
+        width="100%",
+        padding="1em",
+        background_color="rgba(219, 234, 254, 0.2)",
+        border_radius="lg",
+        border="1px solid #93c5fd",
+        margin_top="1em",
+    )
+
+
+def single_player_histogram():
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.heading("Brutto Histogramm letzte 12 Monate", size="3"),
+                rx.text("Einzel", font_size="0.7em", color="#888", padding_top="2px"),
+                align="end",
+                spacing="2",
+                padding_bottom="0.5em",
+            ),
+            rx.cond(
+                GolfState.single_player_histogram_data.contains("echarts_option"),
+                rx.vstack(
+                    rx_echarts.echarts(
+                        option=GolfState.single_player_histogram_data["echarts_option"],
+                        style={"width": "100%", "height": "250px"},
+                    ),
+                    rx.hstack(
+                        rx.text(GolfState.single_player_histogram_data["von_bis"], font_size="0.8em", color="gray"),
+                        rx.spacer(),
+                        rx.text(GolfState.single_player_histogram_data["median"], font_size="0.9em", font_weight="bold"),
+                        width="100%",
+                        align="center",
+                    ),
+                    width="100%",
+                ),
+                rx.text(
+                    "Nicht genug Daten",
+                    color="gray",
+                    padding="20px",
+                    text_align="center",
+                ),
+            )
         ),
         width="100%",
         padding="1em",
@@ -1186,6 +1338,12 @@ def dashboard():
             rx.cond(
                 GolfState.selected_player == "Alle Spieler",
                 player_summary_table(),
+            ),
+
+            # Histogram for single player view
+            rx.cond(
+                GolfState.selected_player != "Alle Spieler",
+                single_player_histogram(),
             ),
 
             # Achievements (Eagles, Albatrosses, Aces) — below KPI table
